@@ -33,6 +33,7 @@ Raporlama ve log dosyası tutar.
 
 Otomatik captcha çözme (pytesseract + OCR ile).
 
+
 General Features
 
 Randomly changes the backlink content according to the specified subject.
