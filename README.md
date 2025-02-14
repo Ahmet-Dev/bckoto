@@ -1,6 +1,8 @@
 # bckoto
 Backlink Otomation Tool
 
+
+
 Genel Özellikler
 
 Backlink içeriğini belirlenen konuya göre rastgele değiştirir.
