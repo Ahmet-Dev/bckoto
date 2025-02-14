@@ -31,7 +31,7 @@ python backlink_automation.py
 
 Eğer dosya farklı bir isimdeyse, komutu uygun dosya adıyla değiştirin.
 
-# English
+## English
 
 Python Installation
 
