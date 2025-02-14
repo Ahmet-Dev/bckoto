@@ -1,8 +1,6 @@
 # bckoto
 Backlink Otomation Tool
 
-
-
 Genel Özellikler
 
 Backlink içeriğini belirlenen konuya göre rastgele değiştirir.
@@ -34,7 +32,6 @@ Headless modda çalışarak performansı optimize eder (GUI açmadan çalıştı
 Raporlama ve log dosyası tutar.
 
 Otomatik captcha çözme (pytesseract + OCR ile).
-
 
 General Features
 
