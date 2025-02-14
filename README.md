@@ -1,5 +1,4 @@
-# bckoto
-Backlink Otomation Tool
+# bckoto Backlink Otomation Tool
 
 ##  Genel Özellikler
 
