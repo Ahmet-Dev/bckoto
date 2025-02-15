@@ -38,7 +38,7 @@ class BacklinkAutomation:
     def __init__(self, site_url, safetensor_model_path, interval=86400, max_backlinks=100, min_pa=50, min_da=50):
         self.site_url = site_url  # Örneğin, referans URL veya ana domain
         self.user_agent = UserAgent()
-        # Kullanılacak anahtar kelimeler (aynı zamanda arama sorgularını oluşturmak için de kullanılacak)
+        # Kullanılacak anahtar kelimeler (hem arama sorguları hem de içerik üretimi için)
         self.keywords = ["seo", "digital marketing", "web development", "link building"]
         # Kara liste (spam) siteler
         self.spam_sites = ["example-spam.com", "blacklisted-site.net"]
@@ -122,59 +122,56 @@ class BacklinkAutomation:
         return list(found_sites)
 
     def get_external_link_count_from_search(self, domain):
-    """
-    Arama motorunu kullanarak, verilen domain ile ilgili sayfaları arar ve sonuç sayısını tahmini
-    dış link sayısı olarak döner.
-    """
-    query = f"\"{domain}\""  # Domain adını tırnak içinde arıyoruz.
-    try:
-        results = list(search(query, num_results=50))
-        return len(results)
-    except Exception as e:
-        self.log_error(f"Arama motoru link sayısı hesaplama hatası ({domain}): {e}")
-        return 0
+        """
+        Arama motorunu kullanarak, verilen domain ile ilgili sayfaları arar ve sonuç sayısını tahmini
+        dış link sayısı olarak döner.
+        """
+        query = f"\"{domain}\""  # Domain adını tırnak içinde arıyoruz.
+        try:
+            results = list(search(query, num_results=50))
+            return len(results)
+        except Exception as e:
+            self.log_error(f"Arama motoru link sayısı hesaplama hatası ({domain}): {e}")
+            return 0
 
     def get_seo_score(self, domain):
-    """
-    Dış API kullanmadan, verilen domain’in ana sayfasını çekip,
-    sayfadaki kelime sayısı ve link sayısına dayalı hesaplamalar yapar.
-    
-    Ek olarak, arama motorundan alınan dış link sayısını (external_count) da hesaplamalara ekler.
-    
-    Hesaplama örneği:
-      - DA (Domain Authority): (effective_word_count / 150) * 50 (maksimum 100)
-          effective_word_count = word_count + external_count * 10
-      - PA (Page Authority): (effective_link_count * 5) (maksimum 100)
-          effective_link_count = (homepage_link_count + external_count) / 2
-      
-    Bu yöntemle hem DA hem de PA, arama motoru sonuçlarından alınan dış link sayısından etkilenmiş olur.
-    
-    Returns:
-        pa (int): Page Authority
-        da (int): Domain Authority
-    """
-    url_options = [f"https://{domain}", f"http://{domain}"]
-    for url in url_options:
-        try:
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, "html.parser")
-                text = soup.get_text(separator=" ")
-                word_count = len(text.split())
-                links = soup.find_all("a")
-                homepage_link_count = len(links)
-                # Arama motorundan dış link sayısını al
-                external_count = self.get_external_link_count_from_search(domain)
-                # Etkili link sayısı: Ana sayfadaki link sayısı ile dış link sayısının ortalaması
-                effective_link_count = (homepage_link_count + external_count) / 2.0
-                # Etkili kelime sayısı: Ana sayfadaki kelime sayısına dış link sayısının belirli bir katsayısı eklenir
-                effective_word_count = word_count + external_count * 10
-                da = min(100, int((effective_word_count / 150) * 50))
-                pa = min(100, int(effective_link_count * 5))
-                return pa, da
-        except Exception as e:
-            self.log_error(f"SEO skor hesaplanamadı ({url}): {e}")
-    return 0, 0
+        """
+        Dış API kullanmadan, verilen domain’in ana sayfasını çekip,
+        sayfadaki kelime sayısı ve link sayısına dayalı hesaplamalar yapar.
+        
+        Ek olarak, arama motorundan alınan dış link sayısını (external_count) da hesaplamalara ekler.
+        
+        Hesaplama örneği:
+          - Effective Word Count = word_count + (external_count * 10)
+          - Effective Link Count = (homepage_link_count + external_count) / 2
+          - DA (Domain Authority) = (Effective Word Count / 150) * 50 (maksimum 100)
+          - PA (Page Authority) = Effective Link Count * 5 (maksimum 100)
+        
+        Returns:
+            pa (int): Page Authority (0-100)
+            da (int): Domain Authority (0-100)
+        """
+        url_options = [f"https://{domain}", f"http://{domain}"]
+        for url in url_options:
+            try:
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    text = soup.get_text(separator=" ")
+                    word_count = len(text.split())
+                    links = soup.find_all("a")
+                    homepage_link_count = len(links)
+                    # Arama motorundan dış link sayısını al
+                    external_count = self.get_external_link_count_from_search(domain)
+                    # Etkili hesaplamalar:
+                    effective_word_count = word_count + (external_count * 10)
+                    effective_link_count = (homepage_link_count + external_count) / 2.0
+                    da = min(100, int((effective_word_count / 150) * 50))
+                    pa = min(100, int(effective_link_count * 5))
+                    return pa, da
+            except Exception as e:
+                self.log_error(f"SEO skor hesaplanamadı ({url}): {e}")
+        return 0, 0
 
     def is_valid_site(self, domain):
         pa, da = self.get_seo_score(domain)
@@ -237,7 +234,6 @@ class BacklinkAutomation:
                 temperature=0.7
             )
             content = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            # Backlink URL'sini metne ekleyelim:
             full_content = f"{content}\n\nVisit our site: {self.backlink_url}"
             return full_content
         except Exception as e:
@@ -263,7 +259,7 @@ class BacklinkAutomation:
             self.driver.find_element(By.NAME, "password").send_keys(password)
             self.driver.find_element(By.NAME, "password_confirm").send_keys(password)
             
-            # CAPTCHA çözümü (XPath siteye göre uyarlanmalı)
+            # CAPTCHA çözümü (XPath, siteye göre uyarlanmalı)
             captcha_img = self.driver.find_element(By.XPATH, "//img[contains(@class, 'captcha')]")
             captcha_img.screenshot("captcha.png")
             captcha_text = self.solve_captcha("captcha.png")
@@ -288,7 +284,7 @@ class BacklinkAutomation:
     def find_comment_field(self):
         """
         Sayfadaki yorum formu alanını otomatik olarak tespit eder.
-        Önce name="comment" aranır, bulunamazsa textarea ve input elementleri placeholder, name veya class içeriğine bakılır.
+        Önce name="comment" aranır; bulunamazsa, textarea ve input elementleri placeholder, name veya class içeriğine bakılır.
         """
         try:
             return self.driver.find_element(By.NAME, "comment")
@@ -319,7 +315,7 @@ class BacklinkAutomation:
     def find_submit_comment_button(self):
         """
         Sayfadaki yorum gönderme butonunu otomatik olarak tespit eder.
-        İlk olarak name="submit_comment", ardından buton metni veya type submit kontrolü yapılır.
+        Önce name="submit_comment" aranır; bulunamazsa, buton metni veya type submit kontrolü yapılır.
         """
         try:
             return self.driver.find_element(By.NAME, "submit_comment")
@@ -340,7 +336,7 @@ class BacklinkAutomation:
     def post_comment(self, site_url):
         """
         Otomatik hesap oluşturma ve giriş sonrası, AI destekli üretilen başlık ve içerikle yorum (backlink) gönderir.
-        Yorum form alanı ve gönder butonu otomatik olarak tespit edilir.
+        Yorum formu alanı ve gönder butonu otomatik olarak tespit edilir.
         """
         try:
             self.driver.get(site_url)
