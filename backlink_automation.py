@@ -5,6 +5,7 @@ import json
 import os
 import asyncio
 import threading
+import logging
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from googlesearch import search
@@ -23,11 +24,16 @@ import cv2
 import smtplib
 import string
 import secrets
+from concurrent.futures import ThreadPoolExecutor
+import undetected_chromedriver as uc
 
 BACKLINKS_FILE = "backlinks.json"
+LOG_FILE = "errors.log"
+
+logging.basicConfig(filename=LOG_FILE, level=logging.ERROR, format='%(asctime)s %(message)s')
 
 class BacklinkAutomation:
-    def __init__(self, site_url, safetensor_model_path, interval=86400, max_backlinks=100):
+    def __init__(self, site_url, safetensor_model_path, interval=86400, max_backlinks=100, min_pa=50, min_da=50):
         self.site_url = site_url
         self.user_agent = UserAgent()
         self.keywords = ["seo", "digital marketing", "web development", "link building"]
@@ -36,9 +42,12 @@ class BacklinkAutomation:
         self.model = self.load_model()
         self.interval = interval
         self.max_backlinks = max_backlinks
+        self.min_pa = min_pa
+        self.min_da = min_da
         self.backlinks_data = self.load_backlinks_data()
         self.lock = threading.Lock()
         self.driver = self.setup_driver()
+        self.executor = ThreadPoolExecutor(max_workers=10)
 
     def setup_driver(self):
         options = Options()
@@ -46,58 +55,59 @@ class BacklinkAutomation:
         options.add_argument("--disable-gpu")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
-        return webdriver.Chrome(service=Service("/usr/local/bin/chromedriver"), options=options)
+        return uc.Chrome(options=options)
 
-    def load_model(self):
-        if os.path.exists(self.model_path):
-            return load_file(self.model_path)
-        else:
-            raise FileNotFoundError("SafeTensor modeli bulunamadı!")
-
-    def load_backlinks_data(self):
-        if os.path.exists(BACKLINKS_FILE):
-            with open(BACKLINKS_FILE, "r") as file:
-                return json.load(file)
-        return {}
-
-    def save_backlinks_data(self):
-        with self.lock:
-            with open(BACKLINKS_FILE, "w") as file:
-                json.dump(self.backlinks_data, file, indent=4)
-
-    def should_post_backlink(self, url):
-        last_post_time = self.backlinks_data.get(url)
-        if last_post_time:
-            return (time.time() - last_post_time) > (3 * 86400)
-        return True
+    def log_error(self, error_message):
+        logging.error(error_message)
 
     def generate_backlink_content(self, keyword):
         input_data = torch.tensor([hash(keyword) % 100])
         output = self.model['output_weights'] @ input_data
         return f"{keyword} hakkında uzman içeriği için {self.site_url} adresine göz atın!"
-    
+
     def generate_title_content(self, keyword):
         input_data = torch.tensor([hash(keyword) % 100])
         output = self.model['output_weights'] @ input_data
         return f"{keyword} ile İlgili En İyi Kaynaklar!"
 
+    def solve_captcha(self, image_path):
+        image = cv2.imread(image_path)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        text = pytesseract.image_to_string(gray)
+        return text.strip()
+
+    async def get_seo_score(self, domain):
+        try:
+            response = await asyncio.to_thread(requests.get, f"https://seo-api.com/get-score?domain={domain}")
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("pa", 0), data.get("da", 0)
+        except Exception as e:
+            self.log_error(f"SEO skoru alınamadı: {e}")
+        return 0, 0
+
+    async def is_valid_site(self, domain):
+        pa, da = await self.get_seo_score(domain)
+        return pa >= self.min_pa and da >= self.min_da
+
     async def find_forums_and_blogs(self):
         search_query = "forum OR blog site:com"
         found_sites = []
-        tasks = []
         for url in search(search_query, num_results=self.max_backlinks):
             domain = tldextract.extract(url).registered_domain
-            if domain not in self.spam_sites:
+            if domain not in self.spam_sites and await self.is_valid_site(domain):
                 found_sites.append(url)
         return found_sites
 
     def post_comment(self, forum_url):
-        """ Yorum ekleyerek backlink gömmek için kullanılan fonksiyon """
         try:
             self.driver.get(forum_url)
             time.sleep(3)
             
-            comment_section = self.driver.find_elements(By.NAME, "comment")
+            comment_section = self.driver.find_elements(By.TAG_NAME, "textarea")
+            if not comment_section:
+                comment_section = self.driver.find_elements(By.CSS_SELECTOR, "[contenteditable='true']")
+            
             if not comment_section:
                 print("Yorum alanı bulunamadı!")
                 return False
@@ -115,48 +125,22 @@ class BacklinkAutomation:
             print(f"Yorum eklendi ve backlink bırakıldı: {forum_url}")
             return True
         except Exception as e:
-            print(f"Yorum ekleme başarısız: {e}")
+            self.log_error(f"Yorum ekleme başarısız: {e}")
             return False
-
-    def site_requires_login(self, site_url):
-        """ Site giriş gerektiriyor mu kontrol eder """
-        self.driver.get(site_url)
-        time.sleep(3)
-        login_fields = self.driver.find_elements(By.NAME, "username")
-        return len(login_fields) > 0
-
-    def create_account_and_login(self, site_url):
-        """ Otomatik kayıt ve giriş yapar """
-        try:
-            self.driver.get(site_url)
-            time.sleep(3)
-            username = f"user{random.randint(1000, 9999)}"
-            password = "SecurePass123!"
-            
-            self.driver.find_element(By.NAME, "username").send_keys(username)
-            self.driver.find_element(By.NAME, "password").send_keys(password)
-            self.driver.find_element(By.NAME, "login").click()
-            time.sleep(3)
-            return True
-        except Exception as e:
-            print(f"Giriş başarısız: {e}")
-        return False
 
     def run(self):
         while True:
             print("Forum ve blog siteleri aranıyor...")
             sites = asyncio.run(self.find_forums_and_blogs())
             print(f"Bulunan siteler: {sites}")
+            futures = []
             for site in sites:
-                if self.site_requires_login(site):
-                    if self.create_account_and_login(site):
-                        self.post_comment(site)
-                else:
-                    self.post_comment(site)
+                futures.append(self.executor.submit(self.post_comment, site))
+            for future in futures:
+                future.result()
             print(f"Backlink ekleme işlemi tamamlandı! {self.interval} saniye sonra tekrar çalışacak...")
             time.sleep(self.interval)
 
-# Kullanım
 if __name__ == "__main__":
-    backlink_bot = BacklinkAutomation("https://example.com", "./Llama-3.2-1B/model.safetensors", interval=86400, max_backlinks=100)
+    backlink_bot = BacklinkAutomation("https://example.com", "./Llama-3.2-1B/model.safetensors", interval=86400, max_backlinks=100, min_pa=50, min_da=50)
     backlink_bot.run()
