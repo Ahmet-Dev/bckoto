@@ -5,7 +5,7 @@ import random
 import logging
 import threading
 import asyncio
-import re
+import re  # Needed for regex extraction
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -17,7 +17,7 @@ from fake_useragent import UserAgent
 
 # --- AI Model (Meta Llama 3.2-1B) ---
 from transformers import LlamaForCausalLM, LlamaTokenizer
-# Model folder (e.g., "Llama-3.2-1B") must contain config.json and a SentencePiece model file (e.g., "tokenizer.model").
+# Your model folder (e.g., "Llama-3.2-1B") must contain config.json and a SentencePiece model file (e.g., "tokenizer.model").
 
 # --- Selenium & CAPTCHA ---
 from selenium.webdriver.common.by import By
@@ -42,7 +42,7 @@ class BacklinkAutomation:
         # Blacklisted (spam) sites
         self.spam_sites = ["example-spam.com", "blacklisted-site.net"]
         self.model_path = safetensor_model_path
-        # Load model and tokenizer
+        # Load the Meta Llama 3.2-1B model and tokenizer
         self.model, self.tokenizer = self.load_model()
         self.interval = interval
         self.max_backlinks = max_backlinks
@@ -55,13 +55,13 @@ class BacklinkAutomation:
         self.lock = threading.Lock()
         self.driver = self.setup_driver()
         self.executor = ThreadPoolExecutor(max_workers=10)
-        self.failed_sites = set()  # To track sites that repeatedly fail
+        self.failed_sites = set()  # To track sites that consistently fail
         # Backlink URL to be appended to generated content
         self.backlink_url = "https://example.com"
 
     def network_delay(self):
-        """Introduce a random delay between 1.5 and 3 seconds."""
-        time.sleep(random.uniform(1.5, 3))
+        """Introduce a random delay between 2 and 6 seconds."""
+        time.sleep(random.uniform(2, 6))
 
     def setup_driver(self):
         options = Options()
@@ -76,14 +76,14 @@ class BacklinkAutomation:
 
     def load_model(self):
         model_dir = os.path.dirname(self.model_path)
-        vocab_path = os.path.join(model_dir, "tokenizer.model")  # Adjust if necessary
+        vocab_path = os.path.join(model_dir, "tokenizer.model")  # Adjust filename if necessary.
         if not os.path.exists(vocab_path):
             raise FileNotFoundError(f"Vocabulary file not found at: {vocab_path}")
         try:
             tokenizer = LlamaTokenizer.from_pretrained(
                 model_dir,
                 trust_remote_code=True,
-                legacy=True,  # or legacy=False if supported
+                legacy=True,  # or set legacy=False if supported
                 vocab_file=vocab_path
             )
             model = LlamaForCausalLM.from_pretrained(model_dir, trust_remote_code=True)
@@ -133,7 +133,7 @@ class BacklinkAutomation:
         found_sites = set()
         for query in search_queries:
             try:
-                self.network_delay()
+                self.network_delay()  # Delay between queries
                 results = list(search(query, num_results=25))
                 print(f"DEBUG: Query: '{query}' returned {len(results)} results: {results}")
                 for url in results:
@@ -161,7 +161,8 @@ class BacklinkAutomation:
 
     def get_seo_score(self, domain):
         """
-        Fetch the homepage of the given domain and calculate SEO scores.
+        Fetch the homepage of the given domain and calculate SEO scores based on word count and link count.
+        Additionally, use AI to analyze a truncated HTML snippet for an SEO evaluation.
         
         Heuristic calculation:
           - Effective Word Count = word_count + (external_count * 10)
@@ -169,7 +170,9 @@ class BacklinkAutomation:
           - DA = (Effective Word Count / 150) * 50, capped at 100
           - PA = Effective Link Count * 5, capped at 100
         
-        Additionally, an AI analysis can be integrated here (optional).
+        AI refinement:
+          A truncated HTML snippet (up to 2000 characters) is sent to the model with a prompt asking for
+          an evaluation in the format "DA: X, PA: Y". If the model returns valid numbers, they are averaged with the heuristic scores.
         
         Returns:
             pa (int): Page Authority (0-100)
@@ -192,11 +195,23 @@ class BacklinkAutomation:
                     da_heuristic = min(100, int((effective_word_count / 150) * 50))
                     pa_heuristic = min(100, int(effective_link_count * 5))
                     
-                    # Optional: AI-based SEO analysis can be added here.
-                    # For example, sending a truncated HTML snippet to the model to get "DA: X, PA: Y".
-                    # For now, we use the heuristic values.
-                    
-                    return pa_heuristic, da_heuristic
+                    # AI-based SEO analysis:
+                    truncated_html = response.text[:2000]  # Truncate HTML snippet
+                    prompt = (f"Analyze the following HTML snippet of a website and provide an SEO evaluation for "
+                              f"Domain Authority (DA) and Page Authority (PA) as two integers between 0 and 100. "
+                              f"Format your answer as 'DA: X, PA: Y'.\nHTML snippet:\n{truncated_html}")
+                    input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
+                    outputs = self.model.generate(input_ids, max_new_tokens=30, do_sample=True, temperature=0.7)
+                    ai_output = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                    match = re.search(r"DA:\s*(\d+)[^\d]+PA:\s*(\d+)", ai_output)
+                    if match:
+                        da_ai = int(match.group(1))
+                        pa_ai = int(match.group(2))
+                        da_final = (da_heuristic + da_ai) // 2
+                        pa_final = (pa_heuristic + pa_ai) // 2
+                    else:
+                        da_final, pa_final = da_heuristic, pa_heuristic
+                    return pa_final, da_final
             except Exception as e:
                 self.log_error(f"SEO score calculation failed ({url}): {e}")
         return 0, 0
@@ -414,7 +429,7 @@ class BacklinkAutomation:
                     return inp
             except Exception as e:
                 self.log_error(f"Comment field detection error: {e}")
-        # AI-based fallback: Ask the model for a CSS selector based on a snippet of the page HTML
+        # AI-based fallback: use the model to suggest a CSS selector based on truncated HTML snippet
         try:
             html_content = self.driver.page_source
             truncated_html = html_content[:1000]
