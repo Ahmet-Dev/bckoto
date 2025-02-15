@@ -16,8 +16,8 @@ from fake_useragent import UserAgent
 
 # --- AI Model (Meta Llama 3.2-1B) ---
 from transformers import LlamaForCausalLM, LlamaTokenizer
-# Model dosyanız "/Llama-3.2-1B/model.safetensors" şeklinde olmalı;
-# Model klasöründe config, tokenizer dosyaları da bulunmalıdır.
+# Model dosyanız "/Llama-3.2-1B/model.safetensors" şeklinde olmalı.
+# Model klasöründe config ve tokenizer dosyalarının bulunması gerekmektedir.
 
 # --- Selenium & CAPTCHA ---
 from selenium.webdriver.common.by import By
@@ -36,12 +36,14 @@ logging.basicConfig(filename=LOG_FILE, level=logging.ERROR, format='%(asctime)s 
 
 class BacklinkAutomation:
     def __init__(self, site_url, safetensor_model_path, interval=86400, max_backlinks=100, min_pa=50, min_da=50):
-        self.site_url = site_url
+        self.site_url = site_url  # Örneğin, referans URL veya ana domain
         self.user_agent = UserAgent()
+        # Kullanılacak anahtar kelimeler (aynı zamanda arama sorgularını oluşturmak için de kullanılacak)
         self.keywords = ["seo", "digital marketing", "web development", "link building"]
+        # Kara liste (spam) siteler
         self.spam_sites = ["example-spam.com", "blacklisted-site.net"]
         self.model_path = safetensor_model_path
-        # Llama modeli ve tokenizer yüklemesi
+        # Meta Llama 3.2-1B modelini ve tokenizer'ı yükle
         self.model, self.tokenizer = self.load_model()
         self.interval = interval
         self.max_backlinks = max_backlinks
@@ -51,6 +53,8 @@ class BacklinkAutomation:
         self.lock = threading.Lock()
         self.driver = self.setup_driver()
         self.executor = ThreadPoolExecutor(max_workers=10)
+        # Backlink URL'si: Yorum içeriğine eklenecek
+        self.backlink_url = "https://example.com"
 
     def setup_driver(self):
         options = Options()
@@ -66,7 +70,7 @@ class BacklinkAutomation:
     def load_model(self):
         """
         Llama modelini ve tokenizer'ı, model dosyasının bulunduğu klasörden yükler.
-        Örneğin, model dosyanız "/Llama-3.2-1B/model.safetensors" ise klasör "/Llama-3.2-1B" olarak kullanılır.
+        Örneğin, model dosyanız "/Llama-3.2-1B/model.safetensors" ise klasör "/Llama-3.2-1B" kullanılır.
         """
         model_dir = os.path.dirname(self.model_path)
         try:
@@ -97,19 +101,20 @@ class BacklinkAutomation:
 
     async def find_forums_and_blogs(self):
         """
-        Googlesearch modülü kullanılarak sadece forum ve blog siteleri aranır.
-        Sorgular: "inurl:forum" ve "inurl:blog" içerenler.
+        Googlesearch modülü kullanılarak, self.keywords listesindeki her anahtar kelime için
+        "inurl:forum <keyword>" ve "inurl:blog <keyword>" sorguları oluşturulur.
+        Sadece forum ve blog siteleri toplanır.
         """
-        search_queries = [
-            "inurl:forum",
-            "inurl:blog"
-        ]
+        search_queries = []
+        for keyword in self.keywords:
+            search_queries.append(f"inurl:forum {keyword}")
+            search_queries.append(f"inurl:blog {keyword}")
+
         found_sites = set()
         for query in search_queries:
             try:
                 for url in search(query, num_results=25):
                     domain = tldextract.extract(url).registered_domain
-                    # Spam listesinde değilse ve SEO skoru uygunsa ekle
                     if domain not in self.spam_sites and self.is_valid_site(domain):
                         found_sites.add(url)
             except Exception as e:
@@ -118,11 +123,11 @@ class BacklinkAutomation:
 
     def get_seo_score(self, domain):
         """
-        Dış API kullanmadan, verilen domain'in ana sayfasını çekip,
+        Dış API kullanmadan, verilen domain’in ana sayfasını çekip,
         sayfadaki kelime sayısı ve link sayısına dayalı orta seviyede bir hesaplama yapar.
-        Hesaplama örneği:
-          - DA: Kelime sayısı / 150 * 50 (maksimum 100)
-          - PA: Link sayısı * 5 (maksimum 100)
+        Örnek hesaplama:
+          - DA: (word_count / 150) * 50 (maksimum 100)
+          - PA: (link_count * 5) (maksimum 100)
         """
         url_options = [f"https://{domain}", f"http://{domain}"]
         for url in url_options:
@@ -188,6 +193,7 @@ class BacklinkAutomation:
     def generate_backlink_content(self, keyword=None):
         """
         Llama modeli kullanılarak, belirlenen konuya göre detaylı ve bilgilendirici backlink içeriği üretir.
+        Oluşturulan içeriğin sonuna backlink URL'si eklenir.
         """
         if not keyword:
             keyword = random.choice(self.keywords)
@@ -201,14 +207,16 @@ class BacklinkAutomation:
                 temperature=0.7
             )
             content = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            return content
+            # Backlink URL'sini metne ekleyelim:
+            full_content = f"{content}\n\nVisit our site: {self.backlink_url}"
+            return full_content
         except Exception as e:
             self.log_error(f"İçerik üretilemedi: {e}")
-            return f"This is a default comment about {keyword}."
+            return f"This is a default comment about {keyword}. Visit {self.backlink_url} for more info."
 
     def create_account_and_login(self, site_url):
         """
-        Selenium ile otomatik hesap oluşturma ve giriş yapma işlemini gerçekleştirir.
+        Selenium kullanarak otomatik hesap oluşturma ve giriş yapma işlemini gerçekleştirir.
         Form alanı isimleri, CAPTCHA XPath’i ve e-posta doğrulama adımları örnek olarak verilmiştir.
         """
         try:
@@ -219,13 +227,13 @@ class BacklinkAutomation:
             username = f"user{random.randint(1000, 9999)}"
             password = self.generate_random_password()
             
-            # Örnek form alanları: "email", "username", "password", "password_confirm"
+            # Form alanları örnek: "email", "username", "password", "password_confirm"
             self.driver.find_element(By.NAME, "email").send_keys(email)
             self.driver.find_element(By.NAME, "username").send_keys(username)
             self.driver.find_element(By.NAME, "password").send_keys(password)
             self.driver.find_element(By.NAME, "password_confirm").send_keys(password)
             
-            # CAPTCHA çözümü (XPath, siteye göre uyarlanmalı)
+            # CAPTCHA çözümü (XPath siteye göre uyarlanmalı)
             captcha_img = self.driver.find_element(By.XPATH, "//img[contains(@class, 'captcha')]")
             captcha_img.screenshot("captcha.png")
             captcha_text = self.solve_captcha("captcha.png")
@@ -235,7 +243,7 @@ class BacklinkAutomation:
             time.sleep(3)
             print(f"{site_url}: Kayıt başarılı, giriş yapılıyor...")
             
-            # Giriş adımları (form alanı isimleri örnek; siteye göre düzenleyin)
+            # Giriş adımları (form alanları örnek; siteye göre düzenleyin)
             self.driver.find_element(By.NAME, "username").clear()
             self.driver.find_element(By.NAME, "username").send_keys(username)
             self.driver.find_element(By.NAME, "password").clear()
@@ -249,39 +257,30 @@ class BacklinkAutomation:
 
     def find_comment_field(self):
         """
-        Otomatik olarak sayfadaki yorum formu alanını bulmaya çalışır.
-        İlk olarak name="comment" ile, ardından placeholder veya class içeriklerine göre tespit eder.
+        Sayfadaki yorum formu alanını otomatik olarak tespit eder.
+        Önce name="comment" aranır, bulunamazsa textarea ve input elementleri placeholder, name veya class içeriğine bakılır.
         """
-        # 1. Adım: name="comment"
         try:
-            field = self.driver.find_element(By.NAME, "comment")
-            return field
+            return self.driver.find_element(By.NAME, "comment")
         except:
             pass
-
-        # 2. Adım: Tüm textarea'ları kontrol et
+        # Tüm textarea'ları kontrol et
         textareas = self.driver.find_elements(By.TAG_NAME, "textarea")
         for textarea in textareas:
             try:
-                placeholder = textarea.get_attribute("placeholder")
-                name_attr = textarea.get_attribute("name")
-                class_attr = textarea.get_attribute("class")
-                if (placeholder and "comment" in placeholder.lower()) or \
-                   (name_attr and "comment" in name_attr.lower()) or \
-                   (class_attr and "comment" in class_attr.lower()):
+                if any(x in (textarea.get_attribute("placeholder") or "").lower() for x in ["comment"]) or \
+                   any(x in (textarea.get_attribute("name") or "").lower() for x in ["comment"]) or \
+                   any(x in (textarea.get_attribute("class") or "").lower() for x in ["comment"]):
                     return textarea
             except Exception as e:
                 self.log_error(f"Yorum alanı tespit hatası: {e}")
-        # 3. Adım: Eğer textarea bulunamadıysa, input alanlarını kontrol et
+        # Son çare: input alanlarını kontrol et
         inputs = self.driver.find_elements(By.TAG_NAME, "input")
         for inp in inputs:
             try:
-                placeholder = inp.get_attribute("placeholder")
-                name_attr = inp.get_attribute("name")
-                class_attr = inp.get_attribute("class")
-                if (placeholder and "comment" in placeholder.lower()) or \
-                   (name_attr and "comment" in name_attr.lower()) or \
-                   (class_attr and "comment" in class_attr.lower()):
+                if any(x in (inp.get_attribute("placeholder") or "").lower() for x in ["comment"]) or \
+                   any(x in (inp.get_attribute("name") or "").lower() for x in ["comment"]) or \
+                   any(x in (inp.get_attribute("class") or "").lower() for x in ["comment"]):
                     return inp
             except Exception as e:
                 self.log_error(f"Yorum alanı tespit hatası: {e}")
@@ -289,16 +288,13 @@ class BacklinkAutomation:
 
     def find_submit_comment_button(self):
         """
-        Otomatik olarak yorum gönderme butonunu bulmaya çalışır.
-        İlk olarak name="submit_comment" ile, ardından buton metni veya type submit ile tespit eder.
+        Sayfadaki yorum gönderme butonunu otomatik olarak tespit eder.
+        İlk olarak name="submit_comment", ardından buton metni veya type submit kontrolü yapılır.
         """
         try:
-            button = self.driver.find_element(By.NAME, "submit_comment")
-            return button
+            return self.driver.find_element(By.NAME, "submit_comment")
         except:
             pass
-
-        # Tüm <button> elementlerini kontrol et
         buttons = self.driver.find_elements(By.TAG_NAME, "button")
         for btn in buttons:
             try:
@@ -306,8 +302,6 @@ class BacklinkAutomation:
                     return btn
             except Exception as e:
                 self.log_error(f"Yorum butonu tespit hatası: {e}")
-
-        # Son çare olarak, input type="submit" elementlerini kontrol et
         submits = self.driver.find_elements(By.XPATH, "//input[@type='submit']")
         if submits:
             return submits[0]
@@ -316,19 +310,17 @@ class BacklinkAutomation:
     def post_comment(self, site_url):
         """
         Otomatik hesap oluşturma ve giriş sonrası, AI destekli üretilen başlık ve içerikle yorum (backlink) gönderir.
-        Yorum form alanı ve gönderim butonu otomatik olarak tespit edilir.
+        Yorum form alanı ve gönder butonu otomatik olarak tespit edilir.
         """
         try:
             self.driver.get(site_url)
             time.sleep(3)
             
-            # AI destekli başlık ve içerik üretimi
             keyword = random.choice(self.keywords)
             title = self.generate_title_content(keyword)
             content = self.generate_backlink_content(keyword)
             full_comment = f"{title}\n\n{content}"
             
-            # Yorum alanını otomatik bul
             comment_field = self.find_comment_field()
             if not comment_field:
                 self.log_error(f"{site_url}: Yorum alanı bulunamadı.")
@@ -336,7 +328,6 @@ class BacklinkAutomation:
             comment_field.clear()
             comment_field.send_keys(full_comment)
             
-            # Yorum gönder butonunu otomatik bul
             submit_button = self.find_submit_comment_button()
             if not submit_button:
                 self.log_error(f"{site_url}: Yorum gönder butonu bulunamadı.")
@@ -374,7 +365,6 @@ class BacklinkAutomation:
                     futures[site] = executor.submit(self.create_account_and_login, site)
                 for site, future in futures.items():
                     if future.result():
-                        # Otomatik kayıt/giriş başarılı ise, yönlendirme yapılarak yorum gönderimi gerçekleştirilir.
                         if executor.submit(self.post_comment, site).result():
                             with self.lock:
                                 self.backlinks_data[site] = time.time()
