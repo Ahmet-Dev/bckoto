@@ -59,6 +59,29 @@ class BacklinkAutomation:
 
     def log_error(self, error_message):
         logging.error(error_message)
+    
+    def load_backlinks_data(self):
+        if os.path.exists(BACKLINKS_FILE):
+            with open(BACKLINKS_FILE, "r") as file:
+                return json.load(file)
+        return {}
+
+    def save_backlinks_data(self):
+        with self.lock:
+            with open(BACKLINKS_FILE, "w") as file:
+                json.dump(self.backlinks_data, file, indent=4)
+    
+    def should_post_backlink(self, url):
+        last_post_time = self.backlinks_data.get(url)
+        if last_post_time:
+            return (time.time() - last_post_time) > (3 * 86400)
+        return True
+
+    def solve_captcha(self, image_path):
+        image = cv2.imread(image_path)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        text = pytesseract.image_to_string(gray)
+        return text.strip()
 
     def generate_backlink_content(self, keyword):
         input_data = torch.tensor([hash(keyword) % 100])
@@ -70,36 +93,49 @@ class BacklinkAutomation:
         output = self.model['output_weights'] @ input_data
         return f"{keyword} ile İlgili En İyi Kaynaklar!"
 
-    def solve_captcha(self, image_path):
-        image = cv2.imread(image_path)
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        text = pytesseract.image_to_string(gray)
-        return text.strip()
+    def generate_random_email(self):
+        return f"user{random.randint(1000, 9999)}@tempmail.com"
 
-    async def get_seo_score(self, domain):
+    def generate_random_password(self):
+        return "P@ssw0rd!" + str(random.randint(1000, 9999))
+
+    def create_account_and_login(self, site_url):
         try:
-            response = await asyncio.to_thread(requests.get, f"https://seo-api.com/get-score?domain={domain}")
-            if response.status_code == 200:
-                data = response.json()
-                return data.get("pa", 0), data.get("da", 0)
+            self.driver.get(site_url)
+            time.sleep(3)
+            
+            email = self.generate_random_email()
+            username = f"user{random.randint(1000, 9999)}"
+            password = self.generate_random_password()
+            
+            self.driver.find_element(By.NAME, "email").send_keys(email)
+            self.driver.find_element(By.NAME, "username").send_keys(username)
+            self.driver.find_element(By.NAME, "password").send_keys(password)
+            self.driver.find_element(By.NAME, "password_confirm").send_keys(password)
+            
+            captcha_img = self.driver.find_element(By.XPATH, "//img[@class='captcha']")
+            captcha_img.screenshot("captcha.png")
+            captcha_text = self.solve_captcha("captcha.png")
+            
+            self.driver.find_element(By.NAME, "captcha").send_keys(captcha_text)
+            self.driver.find_element(By.NAME, "submit").click()
+            
+            time.sleep(3)
+            print("Kayıt başarılı, giriş yapılıyor...")
+            self.driver.find_element(By.NAME, "username").send_keys(username)
+            self.driver.find_element(By.NAME, "password").send_keys(password)
+            self.driver.find_element(By.NAME, "login").click()
+            time.sleep(3)
+            return True
         except Exception as e:
-            self.log_error(f"SEO skoru alınamadı: {e}")
-        return 0, 0
-
-    async def is_valid_site(self, domain):
-        pa, da = await self.get_seo_score(domain)
-        return pa >= self.min_pa and da >= self.min_da
-
-    async def find_forums_and_blogs(self):
-        search_query = "forum OR blog site:com"
-        found_sites = []
-        for url in search(search_query, num_results=self.max_backlinks):
-            domain = tldextract.extract(url).registered_domain
-            if domain not in self.spam_sites and await self.is_valid_site(domain):
-                found_sites.append(url)
-        return found_sites
+            self.log_error(f"Otomatik kayıt ve giriş başarısız: {e}")
+        return False
 
     def post_comment(self, forum_url):
+        if not self.should_post_backlink(forum_url):
+            print(f"{forum_url} için backlink ekleme atlandı. Son 3 gün içinde eklenmiş.")
+            return False
+        
         try:
             self.driver.get(forum_url)
             time.sleep(3)
@@ -113,7 +149,7 @@ class BacklinkAutomation:
                 return False
             
             keyword = random.choice(self.keywords)
-            backlink_content = self.generate_backlink_content(keyword)
+            backlink_content = f"{keyword} hakkında daha fazla bilgi için {self.site_url} adresine göz atabilirsiniz."
             
             comment_section[0].send_keys(backlink_content)
             submit_buttons = self.driver.find_elements(By.NAME, "submit")
@@ -123,6 +159,11 @@ class BacklinkAutomation:
                 print("Gönder butonu bulunamadı!")
             
             print(f"Yorum eklendi ve backlink bırakıldı: {forum_url}")
+            
+            with self.lock:
+                self.backlinks_data[forum_url] = time.time()
+                self.save_backlinks_data()
+            
             return True
         except Exception as e:
             self.log_error(f"Yorum ekleme başarısız: {e}")
@@ -133,12 +174,13 @@ class BacklinkAutomation:
             print("Forum ve blog siteleri aranıyor...")
             sites = asyncio.run(self.find_forums_and_blogs())
             print(f"Bulunan siteler: {sites}")
-            futures = []
-            for site in sites:
-                futures.append(self.executor.submit(self.post_comment, site))
-            for future in futures:
-                future.result()
-            print(f"Backlink ekleme işlemi tamamlandı! {self.interval} saniye sonra tekrar çalışacak...")
+            
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [executor.submit(self.create_account_and_login, site) for site in sites]
+                for future in futures:
+                    if future.result():
+                        executor.submit(self.post_comment, site)
+            
             time.sleep(self.interval)
 
 if __name__ == "__main__":
