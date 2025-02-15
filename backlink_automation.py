@@ -405,7 +405,7 @@ if __name__ == "__main__":
     # safetensor_model_path: Model dosyanızın tam yolu (örneğin, "/Llama-3.2-1B/model.safetensors")
     backlink_bot = BacklinkAutomation(
         "https://example.com",
-        "/Llama-3.2-1B/model.safetensors",  # Kullanılan model dosyası
+        "Llama-3.2-1B/model.safetensors",  # Kullanılan model dosyası
         interval=86400,         # 24 saatte bir çalışır
         max_backlinks=100,
         min_pa=50,
