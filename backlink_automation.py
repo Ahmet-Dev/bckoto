@@ -17,7 +17,7 @@ from fake_useragent import UserAgent
 
 # --- AI Model (Meta Llama 3.2-1B) ---
 from transformers import LlamaForCausalLM, LlamaTokenizer
-# Your model folder (e.g. "Llama-3.2-1B") must contain config and a SentencePiece model file (e.g., "tokenizer.model").
+# Model folder (e.g., "Llama-3.2-1B") must contain config.json and a SentencePiece model file (e.g., "tokenizer.model").
 
 # --- Selenium & CAPTCHA ---
 from selenium.webdriver.common.by import By
@@ -37,32 +37,31 @@ class BacklinkAutomation:
     def __init__(self, site_url, safetensor_model_path, interval=86400, max_backlinks=100, min_pa=50, min_da=50):
         self.site_url = site_url  # e.g., reference URL or main domain
         self.user_agent = UserAgent()
-        # Keywords used for both search queries and content generation
+        # Keywords for search queries and content generation
         self.keywords = ["seo", "digital marketing", "web development", "link building"]
         # Blacklisted (spam) sites
         self.spam_sites = ["example-spam.com", "blacklisted-site.net"]
         self.model_path = safetensor_model_path
-        # Load the Meta Llama 3.2-1B model and tokenizer
+        # Load model and tokenizer
         self.model, self.tokenizer = self.load_model()
         self.interval = interval
         self.max_backlinks = max_backlinks
         self.min_pa = min_pa
         self.min_da = min_da
-        # Distribute maximum backlinks evenly among keywords
+        # Distribute max backlinks evenly among keywords
         self.max_per_keyword = self.max_backlinks // len(self.keywords)
         self.keyword_counts = {kw: 0 for kw in self.keywords}
         self.backlinks_data = self.load_backlinks_data()
         self.lock = threading.Lock()
         self.driver = self.setup_driver()
         self.executor = ThreadPoolExecutor(max_workers=10)
-        # Set to keep track of consistently failing sites so we skip them
-        self.failed_sites = set()
+        self.failed_sites = set()  # To track sites that repeatedly fail
         # Backlink URL to be appended to generated content
         self.backlink_url = "https://example.com"
 
     def network_delay(self):
-        """Introduce a random delay between 1.5 and 6 seconds (approx. 20-40 requests per minute)."""
-        time.sleep(random.uniform(1.5, 6))
+        """Introduce a random delay between 1.5 and 3 seconds."""
+        time.sleep(random.uniform(1.5, 3))
 
     def setup_driver(self):
         options = Options()
@@ -76,19 +75,15 @@ class BacklinkAutomation:
         logging.error(error_message)
 
     def load_model(self):
-        """
-        Load the Llama model and tokenizer from the model directory.
-        Ensure that your model folder (e.g., "Llama-3.2-1B") contains required files like config.json and a SentencePiece model file.
-        """
         model_dir = os.path.dirname(self.model_path)
-        vocab_path = os.path.join(model_dir, "tokenizer.model")  # Adjust filename if needed.
+        vocab_path = os.path.join(model_dir, "tokenizer.model")  # Adjust if necessary
         if not os.path.exists(vocab_path):
             raise FileNotFoundError(f"Vocabulary file not found at: {vocab_path}")
         try:
             tokenizer = LlamaTokenizer.from_pretrained(
                 model_dir,
                 trust_remote_code=True,
-                legacy=True,  # or set legacy=False if your files support the new behavior
+                legacy=True,  # or legacy=False if supported
                 vocab_file=vocab_path
             )
             model = LlamaForCausalLM.from_pretrained(model_dir, trust_remote_code=True)
@@ -116,14 +111,10 @@ class BacklinkAutomation:
         return True
 
     def mark_site_failed(self, site_url):
-        """Mark a site as failed so it can be skipped in future runs."""
         with self.lock:
             self.failed_sites.add(site_url)
 
     def find_element_robust(self, candidate_selectors):
-        """
-        Try a list of candidate selectors (tuples of (By, value)) and return the first found element.
-        """
         for by, value in candidate_selectors:
             try:
                 element = self.driver.find_element(by, value)
@@ -133,11 +124,6 @@ class BacklinkAutomation:
         return None
 
     async def find_forums_and_blogs(self):
-        """
-        Use googlesearch to generate queries from self.keywords.
-        For each keyword, generate "inurl:forum <keyword>" and "inurl:blog <keyword>" queries.
-        Also, add fallback generic queries.
-        """
         search_queries = []
         for keyword in self.keywords:
             search_queries.append(f"inurl:forum {keyword}")
@@ -147,7 +133,7 @@ class BacklinkAutomation:
         found_sites = set()
         for query in search_queries:
             try:
-                self.network_delay()  # Delay between queries
+                self.network_delay()
                 results = list(search(query, num_results=25))
                 print(f"DEBUG: Query: '{query}' returned {len(results)} results: {results}")
                 for url in results:
@@ -162,10 +148,6 @@ class BacklinkAutomation:
         return list(found_sites)
 
     def get_external_link_count_from_search(self, domain, retries=3, delay=3):
-        """
-        Use googlesearch to estimate the external link count for the given domain.
-        Implements retry logic with exponential backoff.
-        """
         query = f"\"{domain}\""
         for attempt in range(retries):
             try:
@@ -179,18 +161,15 @@ class BacklinkAutomation:
 
     def get_seo_score(self, domain):
         """
-        Fetch the homepage of the given domain and calculate SEO scores based on word count and link count.
-        Additionally, use AI to analyze a snippet of the homepage HTML and return an SEO evaluation.
+        Fetch the homepage of the given domain and calculate SEO scores.
         
-        Calculation (heuristic):
+        Heuristic calculation:
           - Effective Word Count = word_count + (external_count * 10)
           - Effective Link Count = (homepage_link_count + external_count) / 2
           - DA = (Effective Word Count / 150) * 50, capped at 100
           - PA = Effective Link Count * 5, capped at 100
         
-        AI Refinement:
-          A prompt is sent to the model with a truncated version of the HTML to obtain a suggested evaluation in the format "DA: X, PA: Y".
-          If successful, the heuristic and AI scores are averaged.
+        Additionally, an AI analysis can be integrated here (optional).
         
         Returns:
             pa (int): Page Authority (0-100)
@@ -213,36 +192,21 @@ class BacklinkAutomation:
                     da_heuristic = min(100, int((effective_word_count / 150) * 50))
                     pa_heuristic = min(100, int(effective_link_count * 5))
                     
-                    # AI-based SEO analysis using a truncated HTML snippet
-                    truncated_html = response.text[:1000]  # Limit HTML snippet length
-                    prompt = (f"Analyze the following HTML snippet from a homepage and provide an SEO evaluation "
-                              f"for Domain Authority (DA) and Page Authority (PA) as two integers between 0 and 100. "
-                              f"Format your answer as 'DA: X, PA: Y'.\nHTML snippet:\n{truncated_html}")
-                    input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
-                    outputs = self.model.generate(input_ids, max_new_tokens=20, do_sample=True, temperature=0.7)
-                    ai_output = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-                    # Try to extract numbers using regex:
-                    match = re.search(r"DA:\s*(\d+).*PA:\s*(\d+)", ai_output)
-                    if match:
-                        da_ai = int(match.group(1))
-                        pa_ai = int(match.group(2))
-                        da = (da_heuristic + da_ai) // 2
-                        pa = (pa_heuristic + pa_ai) // 2
-                    else:
-                        da, pa = da_heuristic, pa_heuristic
-                    return pa, da
+                    # Optional: AI-based SEO analysis can be added here.
+                    # For example, sending a truncated HTML snippet to the model to get "DA: X, PA: Y".
+                    # For now, we use the heuristic values.
+                    
+                    return pa_heuristic, da_heuristic
             except Exception as e:
                 self.log_error(f"SEO score calculation failed ({url}): {e}")
         return 0, 0
 
     def is_valid_site(self, domain):
         pa, da = self.get_seo_score(domain)
+        print(f"DEBUG: Site {domain} - PA: {pa}, DA: {da}")
         return pa >= self.min_pa and da >= self.min_da
 
     def solve_captcha(self, image_path):
-        """
-        Solve CAPTCHA using OpenCV and pytesseract.
-        """
         try:
             self.network_delay()
             image = cv2.imread(image_path)
@@ -260,9 +224,6 @@ class BacklinkAutomation:
         return "P@ssw0rd!" + str(random.randint(1000, 9999))
 
     def generate_title_content(self, keyword=None):
-        """
-        Generate an AI-supported title using the Llama model.
-        """
         if not keyword:
             keyword = random.choice(self.keywords)
         prompt = f"Write a catchy title about {keyword}:"
@@ -281,10 +242,6 @@ class BacklinkAutomation:
             return f"Default Title about {keyword}"
 
     def generate_backlink_content(self, keyword=None):
-        """
-        Generate detailed, informative backlink content using the Llama model,
-        and append the backlink URL.
-        """
         if not keyword:
             keyword = random.choice(self.keywords)
         prompt = f"Write a detailed and informative comment about {keyword}:"
@@ -304,11 +261,6 @@ class BacklinkAutomation:
             return f"This is a default comment about {keyword}. Visit {self.backlink_url} for more info."
 
     def create_account_and_login(self, site_url, retries=3):
-        """
-        Use Selenium to create an account and log in on the target site.
-        Uses robust element detection for form fields.
-        Retries the entire process up to `retries` times if connection errors occur.
-        """
         for attempt in range(retries):
             try:
                 self.driver.get(site_url)
@@ -318,7 +270,6 @@ class BacklinkAutomation:
                 username = f"user{random.randint(1000, 9999)}"
                 password = self.generate_random_password()
                 
-                # Registration fields detection
                 email_field = self.find_element_robust([
                     (By.NAME, "email"),
                     (By.ID, "email"),
@@ -367,7 +318,6 @@ class BacklinkAutomation:
                 password_confirm_field.clear()
                 password_confirm_field.send_keys(password)
                 
-                # Solve CAPTCHA if available
                 captcha_img = self.find_element_robust([
                     (By.XPATH, "//img[contains(@class, 'captcha')]"),
                     (By.CSS_SELECTOR, "img[src*='captcha']")
@@ -387,7 +337,6 @@ class BacklinkAutomation:
                 else:
                     self.log_error(f"{site_url}: CAPTCHA image not found.")
                 
-                # Click the registration submit button
                 submit_button = self.find_element_robust([
                     (By.NAME, "submit"),
                     (By.CSS_SELECTOR, "button[type='submit']"),
@@ -401,7 +350,6 @@ class BacklinkAutomation:
                 time.sleep(3)
                 print(f"{site_url}: Registration successful, logging in...")
                 
-                # Login fields detection
                 username_login = self.find_element_robust([
                     (By.NAME, "username"),
                     (By.ID, "username"),
@@ -444,11 +392,6 @@ class BacklinkAutomation:
         return False
 
     def find_comment_field(self):
-        """
-        Automatically locate the comment field.
-        First, try an element with name="comment"; if not found, check textareas and input elements.
-        If none are found, use AI to analyze a snippet of the page HTML and suggest a CSS selector.
-        """
         try:
             return self.driver.find_element(By.NAME, "comment")
         except:
@@ -471,10 +414,10 @@ class BacklinkAutomation:
                     return inp
             except Exception as e:
                 self.log_error(f"Comment field detection error: {e}")
-        # AI-based comment field detection fallback:
+        # AI-based fallback: Ask the model for a CSS selector based on a snippet of the page HTML
         try:
             html_content = self.driver.page_source
-            truncated_html = html_content[:1000]  # Limit to first 1000 characters
+            truncated_html = html_content[:1000]
             prompt = (f"Analyze the following HTML snippet and return a CSS selector that best identifies "
                       f"the comment input field. Only provide the CSS selector in your answer.\nHTML snippet:\n{truncated_html}")
             input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
@@ -487,10 +430,6 @@ class BacklinkAutomation:
         return None
 
     def find_submit_comment_button(self):
-        """
-        Automatically locate the comment submission button.
-        First, try an element with name="submit_comment"; if not found, check for buttons with text containing "submit" or input[type='submit'].
-        """
         try:
             return self.driver.find_element(By.NAME, "submit_comment")
         except:
@@ -508,11 +447,6 @@ class BacklinkAutomation:
         return None
 
     def post_comment(self, site_url, retries=3):
-        """
-        After account creation and login, select a keyword that hasn't reached its limit,
-        generate an AI-supported title and detailed comment, then locate and submit the comment.
-        Retries up to `retries` times on failure.
-        """
         for attempt in range(retries):
             try:
                 self.driver.get(site_url)
@@ -552,21 +486,20 @@ class BacklinkAutomation:
 
     def run(self):
         """
+        Continue processing until the total number of backlinks reaches max_backlinks.
         Periodically:
-         - Search for blog and forum sites using googlesearch.
+         - Search for blog and forum sites via googlesearch.
          - For valid sites (based on SEO score and not marked as failed), create an account, log in, and post a comment.
          - Record the posting timestamp in a JSON file to avoid reposting within 3 days.
-         - Execute operations in parallel with delays and robust error handling.
          - Distribute maximum backlinks evenly among keywords.
         """
-        while True:
+        while len(self.backlinks_data) < self.max_backlinks:
             print("Searching for blog and forum sites...")
             try:
                 sites = asyncio.run(self.find_forums_and_blogs())
             except Exception as e:
                 self.log_error(f"Forum/blog search error: {e}")
                 sites = []
-            # Exclude sites that have been marked as failed
             sites = [site for site in sites if site not in self.failed_sites]
             print(f"Found sites: {sites}")
             
@@ -587,17 +520,15 @@ class BacklinkAutomation:
                         self.mark_site_failed(site)
             
             self.save_backlinks_data()
-            print(f"Operations complete. Retrying in {self.interval} seconds...")
+            print(f"Operations complete. {len(self.backlinks_data)} backlinks posted so far. Retrying in {self.interval} seconds...")
             time.sleep(self.interval)
-
+        
+        print("Maximum backlinks reached. Exiting.")
 
 if __name__ == "__main__":
-    # Example usage:
-    # site_url: Target domain or reference URL (e.g., "https://example.com")
-    # safetensor_model_path: Full path to your model file (e.g., "Llama-3.2-1B/model.safetensors")
     backlink_bot = BacklinkAutomation(
         "https://example.com",
-        "Llama-3.2-1B/model.safetensors",  # Ensure this path is valid
+        "D:/Otomation/bckoto/Llama-3.2-1B/model.safetensors",  # Ensure this path is valid
         interval=86400,         # Run every 24 hours
         max_backlinks=100,
         min_pa=50,
