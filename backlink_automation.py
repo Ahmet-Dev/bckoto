@@ -81,63 +81,65 @@ class BacklinkAutomation:
         output = self.model['output_weights'] @ input_data
         return f"{keyword} ile İlgili En İyi Kaynaklar!"
 
-    def solve_captcha(self, image_path):
-        """ CAPTCHA çözmek için OpenCV ve Tesseract OCR kullanır """
-        image = cv2.imread(image_path)
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        text = pytesseract.image_to_string(gray)
-        return text.strip()
+    async def find_forums_and_blogs(self):
+        search_query = "SEO forum OR blog site:com"
+        found_sites = []
+        tasks = []
+        for url in search(search_query, num_results=self.max_backlinks):
+            domain = tldextract.extract(url).registered_domain
+            if domain not in self.spam_sites:
+                found_sites.append(url)
+        return found_sites
 
-    def extract_site_url(self):
-        """ Sunucunun kendi URL'sini otomatik çeker """
-        return self.site_url if self.site_url else "https://example.com"
-
-    async def get_seo_score(self, domain):
+    def post_comment(self, forum_url):
+        """ Yorum ekleyerek backlink gömmek için kullanılan fonksiyon """
         try:
-            response = await asyncio.to_thread(requests.get, f"https://seo-api.com/get-score?domain={domain}")
-            if response.status_code == 200:
-                data = response.json()
-                return data.get("pa", 0), data.get("da", 0)
+            self.driver.get(forum_url)
+            time.sleep(3)
+            
+            comment_section = self.driver.find_elements(By.NAME, "comment")
+            if not comment_section:
+                print("Yorum alanı bulunamadı!")
+                return False
+            
+            keyword = random.choice(self.keywords)
+            backlink_content = self.generate_backlink_content(keyword)
+            
+            comment_section[0].send_keys(backlink_content)
+            submit_buttons = self.driver.find_elements(By.NAME, "submit")
+            if submit_buttons:
+                submit_buttons[0].click()
+            else:
+                print("Gönder butonu bulunamadı!")
+            
+            print(f"Yorum eklendi ve backlink bırakıldı: {forum_url}")
+            return True
         except Exception as e:
-            print(f"SEO skoru alınamadı: {e}")
-        return 0, 0
-
-    async def is_valid_site(self, domain):
-        if domain in self.spam_sites:
+            print(f"Yorum ekleme başarısız: {e}")
             return False
-        pa, da = await self.get_seo_score(domain)
-        return pa > 50 and da > 50
+
+    def site_requires_login(self, site_url):
+        """ Site giriş gerektiriyor mu kontrol eder """
+        self.driver.get(site_url)
+        time.sleep(3)
+        login_fields = self.driver.find_elements(By.NAME, "username")
+        return len(login_fields) > 0
 
     def create_account_and_login(self, site_url):
-        """ Otomatik kayıt ve giriş yapar, CAPTCHA çözer """
+        """ Otomatik kayıt ve giriş yapar """
         try:
             self.driver.get(site_url)
             time.sleep(3)
-            email = f"user{random.randint(1000, 9999)}@example.com"
             username = f"user{random.randint(1000, 9999)}"
             password = "SecurePass123!"
             
-            self.driver.find_element(By.NAME, "email").send_keys(email)
-            self.driver.find_element(By.NAME, "username").send_keys(username)
-            self.driver.find_element(By.NAME, "password").send_keys(password)
-            self.driver.find_element(By.NAME, "password_confirm").send_keys(password)
-            
-            captcha_img = self.driver.find_element(By.XPATH, "//img[@class='captcha']")
-            captcha_img.screenshot("captcha.png")
-            captcha_text = self.solve_captcha("captcha.png")
-            
-            self.driver.find_element(By.NAME, "captcha").send_keys(captcha_text)
-            self.driver.find_element(By.NAME, "submit").click()
-            
-            time.sleep(3)
-            print("Kayıt başarılı, giriş yapılıyor...")
             self.driver.find_element(By.NAME, "username").send_keys(username)
             self.driver.find_element(By.NAME, "password").send_keys(password)
             self.driver.find_element(By.NAME, "login").click()
             time.sleep(3)
             return True
         except Exception as e:
-            print(f"Otomatik kayıt ve giriş başarısız: {e}")
+            print(f"Giriş başarısız: {e}")
         return False
 
     def run(self):
@@ -145,13 +147,12 @@ class BacklinkAutomation:
             print("Forum ve blog siteleri aranıyor...")
             sites = asyncio.run(self.find_forums_and_blogs())
             print(f"Bulunan siteler: {sites}")
-            threads = []
             for site in sites:
-                thread = threading.Thread(target=self.post_backlink_thread, args=(site,))
-                thread.start()
-                threads.append(thread)
-            for thread in threads:
-                thread.join()
+                if self.site_requires_login(site):
+                    if self.create_account_and_login(site):
+                        self.post_comment(site)
+                else:
+                    self.post_comment(site)
             print(f"Backlink ekleme işlemi tamamlandı! {self.interval} saniye sonra tekrar çalışacak...")
             time.sleep(self.interval)
 
