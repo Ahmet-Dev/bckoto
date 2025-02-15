@@ -121,30 +121,60 @@ class BacklinkAutomation:
                 self.log_error(f"Google arama hatası ({query}): {e}")
         return list(found_sites)
 
+    def get_external_link_count_from_search(self, domain):
+    """
+    Arama motorunu kullanarak, verilen domain ile ilgili sayfaları arar ve sonuç sayısını tahmini
+    dış link sayısı olarak döner.
+    """
+    query = f"\"{domain}\""  # Domain adını tırnak içinde arıyoruz.
+    try:
+        results = list(search(query, num_results=50))
+        return len(results)
+    except Exception as e:
+        self.log_error(f"Arama motoru link sayısı hesaplama hatası ({domain}): {e}")
+        return 0
+
     def get_seo_score(self, domain):
-        """
-        Dış API kullanmadan, verilen domain’in ana sayfasını çekip,
-        sayfadaki kelime sayısı ve link sayısına dayalı orta seviyede bir hesaplama yapar.
-        Örnek hesaplama:
-          - DA: (word_count / 150) * 50 (maksimum 100)
-          - PA: (link_count * 5) (maksimum 100)
-        """
-        url_options = [f"https://{domain}", f"http://{domain}"]
-        for url in url_options:
-            try:
-                response = requests.get(url, timeout=5)
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.text, "html.parser")
-                    text = soup.get_text(separator=" ")
-                    word_count = len(text.split())
-                    links = soup.find_all("a")
-                    link_count = len(links)
-                    da = min(100, int((word_count / 150) * 50))
-                    pa = min(100, int(link_count * 5))
-                    return pa, da
-            except Exception as e:
-                self.log_error(f"SEO skor hesaplanamadı ({url}): {e}")
-        return 0, 0
+    """
+    Dış API kullanmadan, verilen domain’in ana sayfasını çekip,
+    sayfadaki kelime sayısı ve link sayısına dayalı hesaplamalar yapar.
+    
+    Ek olarak, arama motorundan alınan dış link sayısını (external_count) da hesaplamalara ekler.
+    
+    Hesaplama örneği:
+      - DA (Domain Authority): (effective_word_count / 150) * 50 (maksimum 100)
+          effective_word_count = word_count + external_count * 10
+      - PA (Page Authority): (effective_link_count * 5) (maksimum 100)
+          effective_link_count = (homepage_link_count + external_count) / 2
+      
+    Bu yöntemle hem DA hem de PA, arama motoru sonuçlarından alınan dış link sayısından etkilenmiş olur.
+    
+    Returns:
+        pa (int): Page Authority
+        da (int): Domain Authority
+    """
+    url_options = [f"https://{domain}", f"http://{domain}"]
+    for url in url_options:
+        try:
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, "html.parser")
+                text = soup.get_text(separator=" ")
+                word_count = len(text.split())
+                links = soup.find_all("a")
+                homepage_link_count = len(links)
+                # Arama motorundan dış link sayısını al
+                external_count = self.get_external_link_count_from_search(domain)
+                # Etkili link sayısı: Ana sayfadaki link sayısı ile dış link sayısının ortalaması
+                effective_link_count = (homepage_link_count + external_count) / 2.0
+                # Etkili kelime sayısı: Ana sayfadaki kelime sayısına dış link sayısının belirli bir katsayısı eklenir
+                effective_word_count = word_count + external_count * 10
+                da = min(100, int((effective_word_count / 150) * 50))
+                pa = min(100, int(effective_link_count * 5))
+                return pa, da
+        except Exception as e:
+            self.log_error(f"SEO skor hesaplanamadı ({url}): {e}")
+    return 0, 0
 
     def is_valid_site(self, domain):
         pa, da = self.get_seo_score(domain)
