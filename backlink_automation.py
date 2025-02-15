@@ -74,7 +74,7 @@ class BacklinkAutomation:
         """
         model_dir = os.path.dirname(self.model_path)
         try:
-            tokenizer = LlamaTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+            tokenizer = LlamaTokenizer.from_pretrained(model_dir, trust_remote_code=True, legacy=False)
             model = LlamaForCausalLM.from_pretrained(model_dir, trust_remote_code=True)
             return model, tokenizer
         except Exception as e:
