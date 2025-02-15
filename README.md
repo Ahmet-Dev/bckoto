@@ -95,6 +95,8 @@ Raporlama ve log dosyası tutar.
 
 Otomatik captcha çözme (pytesseract + OCR ile).
 
+⭐ Depoya yıldız vermeyi unutmayın! 😊 🚀
+
 ##  General Features
 
 Randomly changes the backlink content according to the specified subject.
@@ -126,3 +128,5 @@ Optimizes performance by working in headless mode (runs without opening GUI).
 Keeps reporting and log files.
 
 Automatic captcha solving (with pytesseract + OCR).
+
+⭐ Don't forget to star the project! 😊 🚀
