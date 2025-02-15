@@ -528,7 +528,7 @@ class BacklinkAutomation:
 if __name__ == "__main__":
     backlink_bot = BacklinkAutomation(
         "https://example.com",
-        "D:/Otomation/bckoto/Llama-3.2-1B/model.safetensors",  # Ensure this path is valid
+        "Llama-3.2-1B/model.safetensors",  # Ensure this path is valid
         interval=86400,         # Run every 24 hours
         max_backlinks=100,
         min_pa=50,
