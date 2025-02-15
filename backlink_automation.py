@@ -16,7 +16,7 @@ from fake_useragent import UserAgent
 
 # --- AI Model (Meta Llama 3.2-1B) ---
 from transformers import LlamaForCausalLM, LlamaTokenizer
-# Your model folder (e.g., "Llama-3.2-1B") should contain config, a SentencePiece model file (e.g. "tokenizer.model"), etc.
+# Your model folder (e.g. "Llama-3.2-1B") must contain config and a SentencePiece model file (e.g., "tokenizer.model").
 
 # --- Selenium & CAPTCHA ---
 from selenium.webdriver.common.by import By
@@ -36,7 +36,7 @@ class BacklinkAutomation:
     def __init__(self, site_url, safetensor_model_path, interval=86400, max_backlinks=100, min_pa=50, min_da=50):
         self.site_url = site_url  # e.g. reference URL or main domain
         self.user_agent = UserAgent()
-        # Keywords used for both search queries and content generation
+        # Keywords used for search queries and content generation
         self.keywords = ["seo", "digital marketing", "web development", "link building"]
         # Blacklisted (spam) sites
         self.spam_sites = ["example-spam.com", "blacklisted-site.net"]
@@ -47,11 +47,15 @@ class BacklinkAutomation:
         self.max_backlinks = max_backlinks
         self.min_pa = min_pa
         self.min_da = min_da
+        # Calculate maximum backlinks allowed per keyword (using floor division)
+        self.max_per_keyword = self.max_backlinks // len(self.keywords)
+        # Initialize a counter for each keyword
+        self.keyword_counts = {kw: 0 for kw in self.keywords}
         self.backlinks_data = self.load_backlinks_data()
         self.lock = threading.Lock()
         self.driver = self.setup_driver()
         self.executor = ThreadPoolExecutor(max_workers=10)
-        # Backlink URL to be appended to generated content
+        # Backlink URL that will be appended to generated content
         self.backlink_url = "https://example.com"
 
     def network_delay(self):
@@ -72,18 +76,17 @@ class BacklinkAutomation:
     def load_model(self):
         """
         Load the Llama model and tokenizer from the model directory.
-        Make sure that your model folder contains required files such as config.json and a SentencePiece model file.
+        Ensure that your model folder (e.g., "Llama-3.2-1B") contains required files like config.json and a SentencePiece model file.
         """
         model_dir = os.path.dirname(self.model_path)
-        # Adjust the vocab file name as needed (e.g., "tokenizer.model" or "spiece.model")
-        vocab_path = os.path.join(model_dir, "tokenizer.model")
+        vocab_path = os.path.join(model_dir, "tokenizer.model")  # Adjust if your file is named differently
         if not os.path.exists(vocab_path):
             raise FileNotFoundError(f"Vocabulary file not found at: {vocab_path}")
         try:
             tokenizer = LlamaTokenizer.from_pretrained(
                 model_dir,
                 trust_remote_code=True,
-                legacy=True,  # or set legacy=False if your files support the new behavior
+                legacy=True,  # or set legacy=False if appropriate
                 vocab_file=vocab_path
             )
             model = LlamaForCausalLM.from_pretrained(model_dir, trust_remote_code=True)
@@ -112,9 +115,7 @@ class BacklinkAutomation:
 
     def find_element_robust(self, candidate_selectors):
         """
-        Attempt to find an element using a list of candidate selectors.
-        Each candidate is a tuple: (By, value)
-        Returns the element if found, or None otherwise.
+        Try a list of candidate selectors (tuples of (By, value)) and return the first found element.
         """
         for by, value in candidate_selectors:
             try:
@@ -124,10 +125,38 @@ class BacklinkAutomation:
                 continue
         return None
 
+    async def find_forums_and_blogs(self):
+        """
+        Use the googlesearch module to generate queries from self.keywords.
+        For each keyword, generate "inurl:forum <keyword>" and "inurl:blog <keyword>" queries.
+        Also, add fallback generic queries.
+        """
+        search_queries = []
+        for keyword in self.keywords:
+            search_queries.append(f"inurl:forum {keyword}")
+            search_queries.append(f"inurl:blog {keyword}")
+        # Add fallback generic queries if needed
+        search_queries.extend(["seo forum", "seo blog"])
+        
+        found_sites = set()
+        for query in search_queries:
+            try:
+                self.network_delay()  # Delay between queries
+                results = list(search(query, num_results=25))
+                print(f"DEBUG: Query: '{query}' returned {len(results)} results: {results}")
+                for url in results:
+                    domain = tldextract.extract(url).registered_domain
+                    if domain not in self.spam_sites and self.is_valid_site(domain):
+                        found_sites.add(url)
+            except Exception as e:
+                self.log_error(f"Google search error ({query}): {e}")
+        print("DEBUG: Total found sites:", found_sites)
+        return list(found_sites)
+
     def get_external_link_count_from_search(self, domain, retries=3, delay=3):
         """
-        Use the googlesearch module to search for the given domain and return the number of results
-        as an estimated external link count. Implements retry logic with exponential backoff.
+        Use googlesearch to estimate the external link count for the given domain.
+        Implements retry logic with an increased delay between attempts.
         """
         query = f"\"{domain}\""
         for attempt in range(retries):
@@ -142,8 +171,8 @@ class BacklinkAutomation:
 
     def get_seo_score(self, domain):
         """
-        Without using an external API, fetch the homepage of the given domain and calculate
-        SEO scores based on word count and link count. Also, add the estimated external link count.
+        Fetch the homepage of the given domain, then calculate SEO scores based on word count and link count.
+        Incorporate the estimated external link count from search.
         
         Calculation:
           - Effective Word Count = word_count + (external_count * 10)
@@ -302,7 +331,7 @@ class BacklinkAutomation:
             password_confirm_field.clear()
             password_confirm_field.send_keys(password)
             
-            # Solve CAPTCHA (robust approach using XPath; may need adjustment per site)
+            # Solve CAPTCHA if available
             captcha_img = self.find_element_robust([
                 (By.XPATH, "//img[contains(@class, 'captcha')]"),
                 (By.CSS_SELECTOR, "img[src*='captcha']")
@@ -322,7 +351,7 @@ class BacklinkAutomation:
             else:
                 self.log_error(f"{site_url}: CAPTCHA image not found.")
             
-            # Click the submit button (for registration)
+            # Click the registration submit button
             submit_button = self.find_element_robust([
                 (By.NAME, "submit"),
                 (By.CSS_SELECTOR, "button[type='submit']"),
@@ -335,7 +364,7 @@ class BacklinkAutomation:
             time.sleep(3)
             print(f"{site_url}: Registration successful, logging in...")
             
-            # Login steps: robust detection for login fields
+            # Log in using robust detection for login fields
             username_login = self.find_element_robust([
                 (By.NAME, "username"),
                 (By.ID, "username"),
@@ -376,13 +405,12 @@ class BacklinkAutomation:
     def find_comment_field(self):
         """
         Automatically locate the comment field.
-        First, try element with name="comment". If not found, scan textareas and inputs.
+        First, try an element with name="comment"; if not found, scan textareas and input elements.
         """
         try:
             return self.driver.find_element(By.NAME, "comment")
         except:
             pass
-        # Check all textareas
         textareas = self.driver.find_elements(By.TAG_NAME, "textarea")
         for textarea in textareas:
             try:
@@ -392,7 +420,6 @@ class BacklinkAutomation:
                     return textarea
             except Exception as e:
                 self.log_error(f"Comment field detection error: {e}")
-        # As a last resort, check input elements
         inputs = self.driver.find_elements(By.TAG_NAME, "input")
         for inp in inputs:
             try:
@@ -407,7 +434,7 @@ class BacklinkAutomation:
     def find_submit_comment_button(self):
         """
         Automatically locate the comment submission button.
-        First, try element with name="submit_comment"; then check buttons and input[type='submit'].
+        First, try an element with name="submit_comment"; if not found, check buttons and input[type='submit'].
         """
         try:
             return self.driver.find_element(By.NAME, "submit_comment")
@@ -427,14 +454,20 @@ class BacklinkAutomation:
 
     def post_comment(self, site_url):
         """
-        After account creation and login, generate a title and comment using AI,
-        then automatically locate the comment field and submit the comment.
+        After account creation and login, select a keyword that hasn't reached its limit,
+        generate an AI-supported title and detailed comment, then locate and submit the comment.
         """
         try:
             self.driver.get(site_url)
             time.sleep(3)
             
-            keyword = random.choice(self.keywords)
+            # Select a keyword that hasn't reached its limit:
+            available_keywords = [kw for kw in self.keywords if self.keyword_counts[kw] < self.max_per_keyword]
+            if not available_keywords:
+                self.log_error("Maximum backlink count reached for all keywords. Skipping posting.")
+                return False
+            keyword = random.choice(available_keywords)
+            
             title = self.generate_title_content(keyword)
             content = self.generate_backlink_content(keyword)
             full_comment = f"{title}\n\n{content}"
@@ -452,7 +485,10 @@ class BacklinkAutomation:
                 return False
             submit_button.click()
             time.sleep(3)
-            print(f"{site_url}: Comment successfully posted.")
+            print(f"{site_url}: Comment successfully posted using keyword: {keyword}")
+            # Increment count for the chosen keyword
+            with self.lock:
+                self.keyword_counts[keyword] += 1
             return True
         except Exception as e:
             self.log_error(f"Comment posting failed ({site_url}): {e}")
@@ -465,6 +501,7 @@ class BacklinkAutomation:
          - For valid sites (based on SEO score), create an account, log in, and post a comment.
          - Record the posting timestamp in a JSON file to avoid reposting within 3 days.
          - Execute operations in parallel with delays and robust error handling.
+         - Distribute the maximum backlinks evenly among keywords.
         """
         while True:
             print("Searching for blog and forum sites...")
