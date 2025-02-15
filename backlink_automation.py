@@ -82,7 +82,7 @@ class BacklinkAutomation:
         return f"{keyword} ile İlgili En İyi Kaynaklar!"
 
     async def find_forums_and_blogs(self):
-        search_query = "SEO forum OR blog site:com"
+        search_query = "forum OR blog site:com"
         found_sites = []
         tasks = []
         for url in search(search_query, num_results=self.max_backlinks):
