@@ -423,7 +423,7 @@ if __name__ == "__main__":
     # safetensor_model_path: Full path to your model file (e.g., "D:/Otomation/bckoto/Llama-3.2-1B/model.safetensors")
     backlink_bot = BacklinkAutomation(
         "https://example.com",
-        "D:/Otomation/bckoto/Llama-3.2-1B/model.safetensors",  # Use a valid local path without a leading slash if relative
+        "Llama-3.2-1B/model.safetensors",  # Use a valid local path without a leading slash if relative
         interval=86400,         # Run every 24 hours
         max_backlinks=100,
         min_pa=50,
