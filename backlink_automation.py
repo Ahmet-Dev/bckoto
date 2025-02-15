@@ -36,7 +36,7 @@ class BacklinkAutomation:
     def __init__(self, site_url, safetensor_model_path, interval=86400, max_backlinks=100, min_pa=50, min_da=50):
         self.site_url = site_url  # e.g. reference URL or main domain
         self.user_agent = UserAgent()
-        # Keywords used for search queries and content generation
+        # Keywords for search queries and content generation
         self.keywords = ["seo", "digital marketing", "web development", "link building"]
         # Blacklisted (spam) sites
         self.spam_sites = ["example-spam.com", "blacklisted-site.net"]
@@ -47,20 +47,19 @@ class BacklinkAutomation:
         self.max_backlinks = max_backlinks
         self.min_pa = min_pa
         self.min_da = min_da
-        # Calculate maximum backlinks allowed per keyword (using floor division)
+        # Distribute max backlinks evenly among keywords
         self.max_per_keyword = self.max_backlinks // len(self.keywords)
-        # Initialize a counter for each keyword
         self.keyword_counts = {kw: 0 for kw in self.keywords}
         self.backlinks_data = self.load_backlinks_data()
         self.lock = threading.Lock()
         self.driver = self.setup_driver()
         self.executor = ThreadPoolExecutor(max_workers=10)
-        # Backlink URL that will be appended to generated content
+        # Backlink URL appended to generated content
         self.backlink_url = "https://example.com"
 
     def network_delay(self):
-        """Introduce a random delay between 1 and 2 seconds."""
-        time.sleep(random.uniform(1, 2))
+        """Introduce a random delay between 1.5 and 3 seconds (approx. 20-40 requests per minute)."""
+        time.sleep(random.uniform(1.5, 3))
 
     def setup_driver(self):
         options = Options()
@@ -79,7 +78,7 @@ class BacklinkAutomation:
         Ensure that your model folder (e.g., "Llama-3.2-1B") contains required files like config.json and a SentencePiece model file.
         """
         model_dir = os.path.dirname(self.model_path)
-        vocab_path = os.path.join(model_dir, "tokenizer.model")  # Adjust if your file is named differently
+        vocab_path = os.path.join(model_dir, "tokenizer.model")  # Adjust if your file is named differently.
         if not os.path.exists(vocab_path):
             raise FileNotFoundError(f"Vocabulary file not found at: {vocab_path}")
         try:
@@ -135,7 +134,7 @@ class BacklinkAutomation:
         for keyword in self.keywords:
             search_queries.append(f"inurl:forum {keyword}")
             search_queries.append(f"inurl:blog {keyword}")
-        # Add fallback generic queries if needed
+        # Add fallback queries
         search_queries.extend(["seo forum", "seo blog"])
         
         found_sites = set()
@@ -156,7 +155,7 @@ class BacklinkAutomation:
     def get_external_link_count_from_search(self, domain, retries=3, delay=3):
         """
         Use googlesearch to estimate the external link count for the given domain.
-        Implements retry logic with an increased delay between attempts.
+        Implements retry logic with exponential backoff.
         """
         query = f"\"{domain}\""
         for attempt in range(retries):
@@ -171,8 +170,8 @@ class BacklinkAutomation:
 
     def get_seo_score(self, domain):
         """
-        Fetch the homepage of the given domain, then calculate SEO scores based on word count and link count.
-        Incorporate the estimated external link count from search.
+        Fetch the homepage of the given domain and calculate SEO scores based on word count and link count.
+        Incorporate the estimated external link count.
         
         Calculation:
           - Effective Word Count = word_count + (external_count * 10)
@@ -273,139 +272,142 @@ class BacklinkAutomation:
             self.log_error(f"Content generation failed: {e}")
             return f"This is a default comment about {keyword}. Visit {self.backlink_url} for more info."
 
-    def create_account_and_login(self, site_url):
+    def create_account_and_login(self, site_url, retries=3):
         """
         Use Selenium to create an account and log in on the target site.
         Uses robust element detection for form fields.
+        Retries the entire process up to `retries` times if connection errors occur.
         """
-        try:
-            self.driver.get(site_url)
-            time.sleep(3)
-            
-            email = self.generate_random_email()
-            username = f"user{random.randint(1000, 9999)}"
-            password = self.generate_random_password()
-            
-            # Robust detection for registration fields:
-            email_field = self.find_element_robust([
-                (By.NAME, "email"),
-                (By.ID, "email"),
-                (By.CSS_SELECTOR, "input[type='email']")
-            ])
-            if not email_field:
-                self.log_error(f"{site_url}: Email field not found.")
-                return False
-            email_field.clear()
-            email_field.send_keys(email)
-            
-            username_field = self.find_element_robust([
-                (By.NAME, "username"),
-                (By.ID, "username"),
-                (By.CSS_SELECTOR, "input[name*='user']")
-            ])
-            if not username_field:
-                self.log_error(f"{site_url}: Username field not found.")
-                return False
-            username_field.clear()
-            username_field.send_keys(username)
-            
-            password_field = self.find_element_robust([
-                (By.NAME, "password"),
-                (By.ID, "password"),
-                (By.CSS_SELECTOR, "input[type='password']")
-            ])
-            if not password_field:
-                self.log_error(f"{site_url}: Password field not found.")
-                return False
-            password_field.clear()
-            password_field.send_keys(password)
-            
-            password_confirm_field = self.find_element_robust([
-                (By.NAME, "password_confirm"),
-                (By.ID, "password_confirm"),
-                (By.CSS_SELECTOR, "input[name*='confirm']")
-            ])
-            if not password_confirm_field:
-                self.log_error(f"{site_url}: Password confirmation field not found.")
-                return False
-            password_confirm_field.clear()
-            password_confirm_field.send_keys(password)
-            
-            # Solve CAPTCHA if available
-            captcha_img = self.find_element_robust([
-                (By.XPATH, "//img[contains(@class, 'captcha')]"),
-                (By.CSS_SELECTOR, "img[src*='captcha']")
-            ])
-            if captcha_img:
-                captcha_img.screenshot("captcha.png")
-                captcha_text = self.solve_captcha("captcha.png")
-                captcha_field = self.find_element_robust([
-                    (By.NAME, "captcha"),
-                    (By.ID, "captcha")
+        for attempt in range(retries):
+            try:
+                self.driver.get(site_url)
+                time.sleep(3)
+                
+                email = self.generate_random_email()
+                username = f"user{random.randint(1000, 9999)}"
+                password = self.generate_random_password()
+                
+                # Robust detection for registration fields:
+                email_field = self.find_element_robust([
+                    (By.NAME, "email"),
+                    (By.ID, "email"),
+                    (By.CSS_SELECTOR, "input[type='email']")
                 ])
-                if captcha_field:
-                    captcha_field.clear()
-                    captcha_field.send_keys(captcha_text)
+                if not email_field:
+                    self.log_error(f"{site_url}: Email field not found.")
+                    return False
+                email_field.clear()
+                email_field.send_keys(email)
+                
+                username_field = self.find_element_robust([
+                    (By.NAME, "username"),
+                    (By.ID, "username"),
+                    (By.CSS_SELECTOR, "input[name*='user']")
+                ])
+                if not username_field:
+                    self.log_error(f"{site_url}: Username field not found.")
+                    return False
+                username_field.clear()
+                username_field.send_keys(username)
+                
+                password_field = self.find_element_robust([
+                    (By.NAME, "password"),
+                    (By.ID, "password"),
+                    (By.CSS_SELECTOR, "input[type='password']")
+                ])
+                if not password_field:
+                    self.log_error(f"{site_url}: Password field not found.")
+                    return False
+                password_field.clear()
+                password_field.send_keys(password)
+                
+                password_confirm_field = self.find_element_robust([
+                    (By.NAME, "password_confirm"),
+                    (By.ID, "password_confirm"),
+                    (By.CSS_SELECTOR, "input[name*='confirm']")
+                ])
+                if not password_confirm_field:
+                    self.log_error(f"{site_url}: Password confirmation field not found.")
+                    return False
+                password_confirm_field.clear()
+                password_confirm_field.send_keys(password)
+                
+                # Solve CAPTCHA if available
+                captcha_img = self.find_element_robust([
+                    (By.XPATH, "//img[contains(@class, 'captcha')]"),
+                    (By.CSS_SELECTOR, "img[src*='captcha']")
+                ])
+                if captcha_img:
+                    captcha_img.screenshot("captcha.png")
+                    captcha_text = self.solve_captcha("captcha.png")
+                    captcha_field = self.find_element_robust([
+                        (By.NAME, "captcha"),
+                        (By.ID, "captcha")
+                    ])
+                    if captcha_field:
+                        captcha_field.clear()
+                        captcha_field.send_keys(captcha_text)
+                    else:
+                        self.log_error(f"{site_url}: CAPTCHA input field not found.")
                 else:
-                    self.log_error(f"{site_url}: CAPTCHA input field not found.")
-            else:
-                self.log_error(f"{site_url}: CAPTCHA image not found.")
-            
-            # Click the registration submit button
-            submit_button = self.find_element_robust([
-                (By.NAME, "submit"),
-                (By.CSS_SELECTOR, "button[type='submit']"),
-                (By.XPATH, "//input[@type='submit']")
-            ])
-            if not submit_button:
-                self.log_error(f"{site_url}: Registration submit button not found.")
-                return False
-            submit_button.click()
-            time.sleep(3)
-            print(f"{site_url}: Registration successful, logging in...")
-            
-            # Log in using robust detection for login fields
-            username_login = self.find_element_robust([
-                (By.NAME, "username"),
-                (By.ID, "username"),
-                (By.CSS_SELECTOR, "input[name*='user']")
-            ])
-            if not username_login:
-                self.log_error(f"{site_url}: Login username field not found.")
-                return False
-            username_login.clear()
-            username_login.send_keys(username)
-            
-            password_login = self.find_element_robust([
-                (By.NAME, "password"),
-                (By.ID, "password"),
-                (By.CSS_SELECTOR, "input[type='password']")
-            ])
-            if not password_login:
-                self.log_error(f"{site_url}: Login password field not found.")
-                return False
-            password_login.clear()
-            password_login.send_keys(password)
-            
-            login_button = self.find_element_robust([
-                (By.NAME, "login"),
-                (By.CSS_SELECTOR, "button[type='submit']"),
-                (By.XPATH, "//input[@type='submit']")
-            ])
-            if not login_button:
-                self.log_error(f"{site_url}: Login button not found.")
-                return False
-            login_button.click()
-            time.sleep(3)
-            return True
-        except Exception as e:
-            self.log_error(f"Account creation and login failed ({site_url}): {e}")
+                    self.log_error(f"{site_url}: CAPTCHA image not found.")
+                
+                # Click the registration submit button
+                submit_button = self.find_element_robust([
+                    (By.NAME, "submit"),
+                    (By.CSS_SELECTOR, "button[type='submit']"),
+                    (By.XPATH, "//input[@type='submit']")
+                ])
+                if not submit_button:
+                    self.log_error(f"{site_url}: Registration submit button not found.")
+                    return False
+                submit_button.click()
+                time.sleep(3)
+                print(f"{site_url}: Registration successful, logging in...")
+                
+                # Login steps using robust detection:
+                username_login = self.find_element_robust([
+                    (By.NAME, "username"),
+                    (By.ID, "username"),
+                    (By.CSS_SELECTOR, "input[name*='user']")
+                ])
+                if not username_login:
+                    self.log_error(f"{site_url}: Login username field not found.")
+                    return False
+                username_login.clear()
+                username_login.send_keys(username)
+                
+                password_login = self.find_element_robust([
+                    (By.NAME, "password"),
+                    (By.ID, "password"),
+                    (By.CSS_SELECTOR, "input[type='password']")
+                ])
+                if not password_login:
+                    self.log_error(f"{site_url}: Login password field not found.")
+                    return False
+                password_login.clear()
+                password_login.send_keys(password)
+                
+                login_button = self.find_element_robust([
+                    (By.NAME, "login"),
+                    (By.CSS_SELECTOR, "button[type='submit']"),
+                    (By.XPATH, "//input[@type='submit']")
+                ])
+                if not login_button:
+                    self.log_error(f"{site_url}: Login button not found.")
+                    return False
+                login_button.click()
+                time.sleep(3)
+                return True
+            except Exception as e:
+                self.log_error(f"Attempt {attempt+1}/{retries} - Account creation and login failed ({site_url}): {e}")
+                time.sleep(3 * (attempt+1))
         return False
 
     def find_comment_field(self):
         """
         Automatically locate the comment field.
-        First, try an element with name="comment"; if not found, scan textareas and input elements.
+        First, try an element with name="comment"; if not found, check textareas and input elements.
         """
         try:
             return self.driver.find_element(By.NAME, "comment")
@@ -434,7 +436,7 @@ class BacklinkAutomation:
     def find_submit_comment_button(self):
         """
         Automatically locate the comment submission button.
-        First, try an element with name="submit_comment"; if not found, check buttons and input[type='submit'].
+        First, try an element with name="submit_comment"; if not found, check for buttons with text containing "submit" or input[type='submit'].
         """
         try:
             return self.driver.find_element(By.NAME, "submit_comment")
@@ -452,47 +454,49 @@ class BacklinkAutomation:
             return submits[0]
         return None
 
-    def post_comment(self, site_url):
+    def post_comment(self, site_url, retries=3):
         """
         After account creation and login, select a keyword that hasn't reached its limit,
         generate an AI-supported title and detailed comment, then locate and submit the comment.
+        Retries up to `retries` times on failure.
         """
-        try:
-            self.driver.get(site_url)
-            time.sleep(3)
-            
-            # Select a keyword that hasn't reached its limit:
-            available_keywords = [kw for kw in self.keywords if self.keyword_counts[kw] < self.max_per_keyword]
-            if not available_keywords:
-                self.log_error("Maximum backlink count reached for all keywords. Skipping posting.")
-                return False
-            keyword = random.choice(available_keywords)
-            
-            title = self.generate_title_content(keyword)
-            content = self.generate_backlink_content(keyword)
-            full_comment = f"{title}\n\n{content}"
-            
-            comment_field = self.find_comment_field()
-            if not comment_field:
-                self.log_error(f"{site_url}: Comment field not found.")
-                return False
-            comment_field.clear()
-            comment_field.send_keys(full_comment)
-            
-            submit_button = self.find_submit_comment_button()
-            if not submit_button:
-                self.log_error(f"{site_url}: Submit comment button not found.")
-                return False
-            submit_button.click()
-            time.sleep(3)
-            print(f"{site_url}: Comment successfully posted using keyword: {keyword}")
-            # Increment count for the chosen keyword
-            with self.lock:
-                self.keyword_counts[keyword] += 1
-            return True
-        except Exception as e:
-            self.log_error(f"Comment posting failed ({site_url}): {e}")
-            return False
+        for attempt in range(retries):
+            try:
+                self.driver.get(site_url)
+                time.sleep(3)
+                
+                # Choose a keyword that hasn't reached its per-keyword limit
+                available_keywords = [kw for kw in self.keywords if self.keyword_counts[kw] < self.max_per_keyword]
+                if not available_keywords:
+                    self.log_error("Maximum backlink count reached for all keywords. Skipping posting.")
+                    return False
+                keyword = random.choice(available_keywords)
+                
+                title = self.generate_title_content(keyword)
+                content = self.generate_backlink_content(keyword)
+                full_comment = f"{title}\n\n{content}"
+                
+                comment_field = self.find_comment_field()
+                if not comment_field:
+                    self.log_error(f"{site_url}: Comment field not found.")
+                    return False
+                comment_field.clear()
+                comment_field.send_keys(full_comment)
+                
+                submit_button = self.find_submit_comment_button()
+                if not submit_button:
+                    self.log_error(f"{site_url}: Submit comment button not found.")
+                    return False
+                submit_button.click()
+                time.sleep(3)
+                print(f"{site_url}: Comment successfully posted using keyword: {keyword}")
+                with self.lock:
+                    self.keyword_counts[keyword] += 1
+                return True
+            except Exception as e:
+                self.log_error(f"Attempt {attempt+1}/{retries} - Comment posting failed ({site_url}): {e}")
+                time.sleep(3 * (attempt+1))
+        return False
 
     def run(self):
         """
