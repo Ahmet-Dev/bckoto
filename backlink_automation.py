@@ -5,6 +5,7 @@ import random
 import logging
 import threading
 import asyncio
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -34,9 +35,9 @@ logging.basicConfig(filename=LOG_FILE, level=logging.ERROR, format='%(asctime)s 
 
 class BacklinkAutomation:
     def __init__(self, site_url, safetensor_model_path, interval=86400, max_backlinks=100, min_pa=50, min_da=50):
-        self.site_url = site_url  # e.g. reference URL or main domain
+        self.site_url = site_url  # e.g., reference URL or main domain
         self.user_agent = UserAgent()
-        # Keywords for search queries and content generation
+        # Keywords used for both search queries and content generation
         self.keywords = ["seo", "digital marketing", "web development", "link building"]
         # Blacklisted (spam) sites
         self.spam_sites = ["example-spam.com", "blacklisted-site.net"]
@@ -47,19 +48,21 @@ class BacklinkAutomation:
         self.max_backlinks = max_backlinks
         self.min_pa = min_pa
         self.min_da = min_da
-        # Distribute max backlinks evenly among keywords
+        # Distribute maximum backlinks evenly among keywords
         self.max_per_keyword = self.max_backlinks // len(self.keywords)
         self.keyword_counts = {kw: 0 for kw in self.keywords}
         self.backlinks_data = self.load_backlinks_data()
         self.lock = threading.Lock()
         self.driver = self.setup_driver()
         self.executor = ThreadPoolExecutor(max_workers=10)
-        # Backlink URL appended to generated content
+        # Set to keep track of consistently failing sites so we skip them
+        self.failed_sites = set()
+        # Backlink URL to be appended to generated content
         self.backlink_url = "https://example.com"
 
     def network_delay(self):
-        """Introduce a random delay between 1.5 and 3 seconds (approx. 20-40 requests per minute)."""
-        time.sleep(random.uniform(1.5, 3))
+        """Introduce a random delay between 1.5 and 6 seconds (approx. 20-40 requests per minute)."""
+        time.sleep(random.uniform(1.5, 6))
 
     def setup_driver(self):
         options = Options()
@@ -78,14 +81,14 @@ class BacklinkAutomation:
         Ensure that your model folder (e.g., "Llama-3.2-1B") contains required files like config.json and a SentencePiece model file.
         """
         model_dir = os.path.dirname(self.model_path)
-        vocab_path = os.path.join(model_dir, "tokenizer.model")  # Adjust if your file is named differently.
+        vocab_path = os.path.join(model_dir, "tokenizer.model")  # Adjust filename if needed.
         if not os.path.exists(vocab_path):
             raise FileNotFoundError(f"Vocabulary file not found at: {vocab_path}")
         try:
             tokenizer = LlamaTokenizer.from_pretrained(
                 model_dir,
                 trust_remote_code=True,
-                legacy=True,  # or set legacy=False if appropriate
+                legacy=True,  # or set legacy=False if your files support the new behavior
                 vocab_file=vocab_path
             )
             model = LlamaForCausalLM.from_pretrained(model_dir, trust_remote_code=True)
@@ -112,6 +115,11 @@ class BacklinkAutomation:
             return (time.time() - last_post_time) > (3 * 86400)
         return True
 
+    def mark_site_failed(self, site_url):
+        """Mark a site as failed so it can be skipped in future runs."""
+        with self.lock:
+            self.failed_sites.add(site_url)
+
     def find_element_robust(self, candidate_selectors):
         """
         Try a list of candidate selectors (tuples of (By, value)) and return the first found element.
@@ -126,7 +134,7 @@ class BacklinkAutomation:
 
     async def find_forums_and_blogs(self):
         """
-        Use the googlesearch module to generate queries from self.keywords.
+        Use googlesearch to generate queries from self.keywords.
         For each keyword, generate "inurl:forum <keyword>" and "inurl:blog <keyword>" queries.
         Also, add fallback generic queries.
         """
@@ -134,7 +142,6 @@ class BacklinkAutomation:
         for keyword in self.keywords:
             search_queries.append(f"inurl:forum {keyword}")
             search_queries.append(f"inurl:blog {keyword}")
-        # Add fallback queries
         search_queries.extend(["seo forum", "seo blog"])
         
         found_sites = set()
@@ -145,7 +152,9 @@ class BacklinkAutomation:
                 print(f"DEBUG: Query: '{query}' returned {len(results)} results: {results}")
                 for url in results:
                     domain = tldextract.extract(url).registered_domain
-                    if domain not in self.spam_sites and self.is_valid_site(domain):
+                    if domain in self.spam_sites or url in self.failed_sites:
+                        continue
+                    if self.is_valid_site(domain):
                         found_sites.add(url)
             except Exception as e:
                 self.log_error(f"Google search error ({query}): {e}")
@@ -171,13 +180,17 @@ class BacklinkAutomation:
     def get_seo_score(self, domain):
         """
         Fetch the homepage of the given domain and calculate SEO scores based on word count and link count.
-        Incorporate the estimated external link count.
+        Additionally, use AI to analyze a snippet of the homepage HTML and return an SEO evaluation.
         
-        Calculation:
+        Calculation (heuristic):
           - Effective Word Count = word_count + (external_count * 10)
           - Effective Link Count = (homepage_link_count + external_count) / 2
           - DA = (Effective Word Count / 150) * 50, capped at 100
           - PA = Effective Link Count * 5, capped at 100
+        
+        AI Refinement:
+          A prompt is sent to the model with a truncated version of the HTML to obtain a suggested evaluation in the format "DA: X, PA: Y".
+          If successful, the heuristic and AI scores are averaged.
         
         Returns:
             pa (int): Page Authority (0-100)
@@ -197,8 +210,26 @@ class BacklinkAutomation:
                     external_count = self.get_external_link_count_from_search(domain)
                     effective_word_count = word_count + (external_count * 10)
                     effective_link_count = (homepage_link_count + external_count) / 2.0
-                    da = min(100, int((effective_word_count / 150) * 50))
-                    pa = min(100, int(effective_link_count * 5))
+                    da_heuristic = min(100, int((effective_word_count / 150) * 50))
+                    pa_heuristic = min(100, int(effective_link_count * 5))
+                    
+                    # AI-based SEO analysis using a truncated HTML snippet
+                    truncated_html = response.text[:1000]  # Limit HTML snippet length
+                    prompt = (f"Analyze the following HTML snippet from a homepage and provide an SEO evaluation "
+                              f"for Domain Authority (DA) and Page Authority (PA) as two integers between 0 and 100. "
+                              f"Format your answer as 'DA: X, PA: Y'.\nHTML snippet:\n{truncated_html}")
+                    input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
+                    outputs = self.model.generate(input_ids, max_new_tokens=20, do_sample=True, temperature=0.7)
+                    ai_output = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                    # Try to extract numbers using regex:
+                    match = re.search(r"DA:\s*(\d+).*PA:\s*(\d+)", ai_output)
+                    if match:
+                        da_ai = int(match.group(1))
+                        pa_ai = int(match.group(2))
+                        da = (da_heuristic + da_ai) // 2
+                        pa = (pa_heuristic + pa_ai) // 2
+                    else:
+                        da, pa = da_heuristic, pa_heuristic
                     return pa, da
             except Exception as e:
                 self.log_error(f"SEO score calculation failed ({url}): {e}")
@@ -287,7 +318,7 @@ class BacklinkAutomation:
                 username = f"user{random.randint(1000, 9999)}"
                 password = self.generate_random_password()
                 
-                # Robust detection for registration fields:
+                # Registration fields detection
                 email_field = self.find_element_robust([
                     (By.NAME, "email"),
                     (By.ID, "email"),
@@ -295,6 +326,7 @@ class BacklinkAutomation:
                 ])
                 if not email_field:
                     self.log_error(f"{site_url}: Email field not found.")
+                    self.mark_site_failed(site_url)
                     return False
                 email_field.clear()
                 email_field.send_keys(email)
@@ -306,6 +338,7 @@ class BacklinkAutomation:
                 ])
                 if not username_field:
                     self.log_error(f"{site_url}: Username field not found.")
+                    self.mark_site_failed(site_url)
                     return False
                 username_field.clear()
                 username_field.send_keys(username)
@@ -317,6 +350,7 @@ class BacklinkAutomation:
                 ])
                 if not password_field:
                     self.log_error(f"{site_url}: Password field not found.")
+                    self.mark_site_failed(site_url)
                     return False
                 password_field.clear()
                 password_field.send_keys(password)
@@ -328,6 +362,7 @@ class BacklinkAutomation:
                 ])
                 if not password_confirm_field:
                     self.log_error(f"{site_url}: Password confirmation field not found.")
+                    self.mark_site_failed(site_url)
                     return False
                 password_confirm_field.clear()
                 password_confirm_field.send_keys(password)
@@ -360,12 +395,13 @@ class BacklinkAutomation:
                 ])
                 if not submit_button:
                     self.log_error(f"{site_url}: Registration submit button not found.")
+                    self.mark_site_failed(site_url)
                     return False
                 submit_button.click()
                 time.sleep(3)
                 print(f"{site_url}: Registration successful, logging in...")
                 
-                # Login steps using robust detection:
+                # Login fields detection
                 username_login = self.find_element_robust([
                     (By.NAME, "username"),
                     (By.ID, "username"),
@@ -373,6 +409,7 @@ class BacklinkAutomation:
                 ])
                 if not username_login:
                     self.log_error(f"{site_url}: Login username field not found.")
+                    self.mark_site_failed(site_url)
                     return False
                 username_login.clear()
                 username_login.send_keys(username)
@@ -384,6 +421,7 @@ class BacklinkAutomation:
                 ])
                 if not password_login:
                     self.log_error(f"{site_url}: Login password field not found.")
+                    self.mark_site_failed(site_url)
                     return False
                 password_login.clear()
                 password_login.send_keys(password)
@@ -395,6 +433,7 @@ class BacklinkAutomation:
                 ])
                 if not login_button:
                     self.log_error(f"{site_url}: Login button not found.")
+                    self.mark_site_failed(site_url)
                     return False
                 login_button.click()
                 time.sleep(3)
@@ -408,6 +447,7 @@ class BacklinkAutomation:
         """
         Automatically locate the comment field.
         First, try an element with name="comment"; if not found, check textareas and input elements.
+        If none are found, use AI to analyze a snippet of the page HTML and suggest a CSS selector.
         """
         try:
             return self.driver.find_element(By.NAME, "comment")
@@ -431,6 +471,19 @@ class BacklinkAutomation:
                     return inp
             except Exception as e:
                 self.log_error(f"Comment field detection error: {e}")
+        # AI-based comment field detection fallback:
+        try:
+            html_content = self.driver.page_source
+            truncated_html = html_content[:1000]  # Limit to first 1000 characters
+            prompt = (f"Analyze the following HTML snippet and return a CSS selector that best identifies "
+                      f"the comment input field. Only provide the CSS selector in your answer.\nHTML snippet:\n{truncated_html}")
+            input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
+            outputs = self.model.generate(input_ids, max_new_tokens=20, do_sample=True, temperature=0.7)
+            selector = self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+            field = self.driver.find_element(By.CSS_SELECTOR, selector)
+            return field
+        except Exception as e:
+            self.log_error(f"AI-based comment field detection failed: {e}")
         return None
 
     def find_submit_comment_button(self):
@@ -465,7 +518,6 @@ class BacklinkAutomation:
                 self.driver.get(site_url)
                 time.sleep(3)
                 
-                # Choose a keyword that hasn't reached its per-keyword limit
                 available_keywords = [kw for kw in self.keywords if self.keyword_counts[kw] < self.max_per_keyword]
                 if not available_keywords:
                     self.log_error("Maximum backlink count reached for all keywords. Skipping posting.")
@@ -502,10 +554,10 @@ class BacklinkAutomation:
         """
         Periodically:
          - Search for blog and forum sites using googlesearch.
-         - For valid sites (based on SEO score), create an account, log in, and post a comment.
+         - For valid sites (based on SEO score and not marked as failed), create an account, log in, and post a comment.
          - Record the posting timestamp in a JSON file to avoid reposting within 3 days.
          - Execute operations in parallel with delays and robust error handling.
-         - Distribute the maximum backlinks evenly among keywords.
+         - Distribute maximum backlinks evenly among keywords.
         """
         while True:
             print("Searching for blog and forum sites...")
@@ -514,6 +566,8 @@ class BacklinkAutomation:
             except Exception as e:
                 self.log_error(f"Forum/blog search error: {e}")
                 sites = []
+            # Exclude sites that have been marked as failed
+            sites = [site for site in sites if site not in self.failed_sites]
             print(f"Found sites: {sites}")
             
             with ThreadPoolExecutor(max_workers=5) as executor:
@@ -527,6 +581,10 @@ class BacklinkAutomation:
                         if executor.submit(self.post_comment, site).result():
                             with self.lock:
                                 self.backlinks_data[site] = time.time()
+                        else:
+                            self.mark_site_failed(site)
+                    else:
+                        self.mark_site_failed(site)
             
             self.save_backlinks_data()
             print(f"Operations complete. Retrying in {self.interval} seconds...")
