@@ -59,7 +59,13 @@ class BacklinkAutomation:
 
     def log_error(self, error_message):
         logging.error(error_message)
-    
+
+    def load_model(self):
+        if os.path.exists(self.model_path):
+            return load_file(self.model_path)
+        else:
+            raise FileNotFoundError("SafeTensor modeli bulunamadı!")
+
     def load_backlinks_data(self):
         if os.path.exists(BACKLINKS_FILE):
             with open(BACKLINKS_FILE, "r") as file:
@@ -70,28 +76,47 @@ class BacklinkAutomation:
         with self.lock:
             with open(BACKLINKS_FILE, "w") as file:
                 json.dump(self.backlinks_data, file, indent=4)
-    
+
     def should_post_backlink(self, url):
         last_post_time = self.backlinks_data.get(url)
         if last_post_time:
             return (time.time() - last_post_time) > (3 * 86400)
         return True
 
+    async def find_forums_and_blogs(self):
+        search_queries = [
+            "inurl:forum SEO",
+            "inurl:forum digital marketing",
+            "inurl:forum web development",
+            "inurl:blog link building"
+        ]
+        found_sites = set()
+        for query in search_queries:
+            for url in search(query, num_results=25):
+                domain = tldextract.extract(url).registered_domain
+                if domain not in self.spam_sites and self.is_valid_site(domain):
+                    found_sites.add(url)
+        return list(found_sites)
+
+    def get_seo_score(self, domain):
+        try:
+            response = requests.get(f"https://seo-api.com/get-score?domain={domain}")
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("pa", 0), data.get("da", 0)
+        except Exception as e:
+            self.log_error(f"SEO skoru alınamadı: {e}")
+        return 0, 0
+
+    def is_valid_site(self, domain):
+        pa, da = self.get_seo_score(domain)
+        return pa >= self.min_pa and da >= self.min_da
+
     def solve_captcha(self, image_path):
         image = cv2.imread(image_path)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         text = pytesseract.image_to_string(gray)
         return text.strip()
-
-    def generate_backlink_content(self, keyword):
-        input_data = torch.tensor([hash(keyword) % 100])
-        output = self.model['output_weights'] @ input_data
-        return f"{keyword} hakkında uzman içeriği için {self.site_url} adresine göz atın!"
-
-    def generate_title_content(self, keyword):
-        input_data = torch.tensor([hash(keyword) % 100])
-        output = self.model['output_weights'] @ input_data
-        return f"{keyword} ile İlgili En İyi Kaynaklar!"
 
     def generate_random_email(self):
         return f"user{random.randint(1000, 9999)}@tempmail.com"
@@ -130,44 +155,6 @@ class BacklinkAutomation:
         except Exception as e:
             self.log_error(f"Otomatik kayıt ve giriş başarısız: {e}")
         return False
-
-    def post_comment(self, forum_url):
-        if not self.should_post_backlink(forum_url):
-            print(f"{forum_url} için backlink ekleme atlandı. Son 3 gün içinde eklenmiş.")
-            return False
-        
-        try:
-            self.driver.get(forum_url)
-            time.sleep(3)
-            
-            comment_section = self.driver.find_elements(By.TAG_NAME, "textarea")
-            if not comment_section:
-                comment_section = self.driver.find_elements(By.CSS_SELECTOR, "[contenteditable='true']")
-            
-            if not comment_section:
-                print("Yorum alanı bulunamadı!")
-                return False
-            
-            keyword = random.choice(self.keywords)
-            backlink_content = f"{keyword} hakkında daha fazla bilgi için {self.site_url} adresine göz atabilirsiniz."
-            
-            comment_section[0].send_keys(backlink_content)
-            submit_buttons = self.driver.find_elements(By.NAME, "submit")
-            if submit_buttons:
-                submit_buttons[0].click()
-            else:
-                print("Gönder butonu bulunamadı!")
-            
-            print(f"Yorum eklendi ve backlink bırakıldı: {forum_url}")
-            
-            with self.lock:
-                self.backlinks_data[forum_url] = time.time()
-                self.save_backlinks_data()
-            
-            return True
-        except Exception as e:
-            self.log_error(f"Yorum ekleme başarısız: {e}")
-            return False
 
     def run(self):
         while True:
