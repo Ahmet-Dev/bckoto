@@ -16,7 +16,7 @@ from fake_useragent import UserAgent
 
 # --- AI Model (Meta Llama 3.2-1B) ---
 from transformers import LlamaForCausalLM, LlamaTokenizer
-# Your model file should be in a folder with the required config and tokenizer files.
+# Your model folder (e.g., "Llama-3.2-1B") should contain config, a SentencePiece model file (e.g. "tokenizer.model"), etc.
 
 # --- Selenium & CAPTCHA ---
 from selenium.webdriver.common.by import By
@@ -36,12 +36,12 @@ class BacklinkAutomation:
     def __init__(self, site_url, safetensor_model_path, interval=86400, max_backlinks=100, min_pa=50, min_da=50):
         self.site_url = site_url  # e.g. reference URL or main domain
         self.user_agent = UserAgent()
-        # Keywords to be used for both search queries and content generation.
+        # Keywords used for both search queries and content generation
         self.keywords = ["seo", "digital marketing", "web development", "link building"]
         # Blacklisted (spam) sites
         self.spam_sites = ["example-spam.com", "blacklisted-site.net"]
         self.model_path = safetensor_model_path
-        # Load Meta Llama 3.2-1B model and tokenizer
+        # Load the Meta Llama 3.2-1B model and tokenizer
         self.model, self.tokenizer = self.load_model()
         self.interval = interval
         self.max_backlinks = max_backlinks
@@ -71,19 +71,19 @@ class BacklinkAutomation:
 
     def load_model(self):
         """
-        Load the Llama model and tokenizer from the directory containing your checkpoint.
-        Ensure that the directory (e.g., "Llama-3.2-1B") contains required files like config.json and a SentencePiece model file.
+        Load the Llama model and tokenizer from the model directory.
+        Make sure that your model folder contains required files such as config.json and a SentencePiece model file.
         """
         model_dir = os.path.dirname(self.model_path)
-        # If you have a SentencePiece model (e.g., "tokenizer.model" or "spiece.model"), set its path:
-        vocab_path = os.path.join(model_dir, "tokenizer.model")  # Adjust the filename if needed.
+        # Adjust the vocab file name as needed (e.g., "tokenizer.model" or "spiece.model")
+        vocab_path = os.path.join(model_dir, "tokenizer.model")
         if not os.path.exists(vocab_path):
             raise FileNotFoundError(f"Vocabulary file not found at: {vocab_path}")
         try:
             tokenizer = LlamaTokenizer.from_pretrained(
                 model_dir,
                 trust_remote_code=True,
-                legacy=True,  # Use legacy behavior (or set legacy=False if your setup supports it)
+                legacy=True,  # or set legacy=False if your files support the new behavior
                 vocab_file=vocab_path
             )
             model = LlamaForCausalLM.from_pretrained(model_dir, trust_remote_code=True)
@@ -104,39 +104,30 @@ class BacklinkAutomation:
                 json.dump(self.backlinks_data, file, indent=4)
 
     def should_post_backlink(self, url):
-        """Prevent posting a backlink to the same site within 3 days."""
+        """Prevent posting to the same site within 3 days."""
         last_post_time = self.backlinks_data.get(url)
         if last_post_time:
             return (time.time() - last_post_time) > (3 * 86400)
         return True
 
-    async def find_forums_and_blogs(self):
+    def find_element_robust(self, candidate_selectors):
         """
-        Use the googlesearch module to create queries from self.keywords.
-        For each keyword, generate "inurl:forum <keyword>" and "inurl:blog <keyword>" queries.
-        Only forum and blog sites are collected.
+        Attempt to find an element using a list of candidate selectors.
+        Each candidate is a tuple: (By, value)
+        Returns the element if found, or None otherwise.
         """
-        search_queries = []
-        for keyword in self.keywords:
-            search_queries.append(f"inurl:forum {keyword}")
-            search_queries.append(f"inurl:blog {keyword}")
-
-        found_sites = set()
-        for query in search_queries:
+        for by, value in candidate_selectors:
             try:
-                self.network_delay()  # Delay between queries
-                for url in search(query, num_results=25):
-                    domain = tldextract.extract(url).registered_domain
-                    if domain not in self.spam_sites and self.is_valid_site(domain):
-                        found_sites.add(url)
-            except Exception as e:
-                self.log_error(f"Google search error ({query}): {e}")
-        return list(found_sites)
+                element = self.driver.find_element(by, value)
+                return element
+            except Exception:
+                continue
+        return None
 
-    def get_external_link_count_from_search(self, domain, retries=3, delay=2):
+    def get_external_link_count_from_search(self, domain, retries=3, delay=3):
         """
-        Use googlesearch to search for the given domain and return the number of results
-        as an estimate for external link count. Implements retry logic.
+        Use the googlesearch module to search for the given domain and return the number of results
+        as an estimated external link count. Implements retry logic with exponential backoff.
         """
         query = f"\"{domain}\""
         for attempt in range(retries):
@@ -146,15 +137,13 @@ class BacklinkAutomation:
                 return len(results)
             except Exception as e:
                 self.log_error(f"Attempt {attempt+1}/{retries} - Error fetching search results for {domain}: {e}")
-                time.sleep(delay)
+                time.sleep(delay * (attempt + 1))
         return 0
 
     def get_seo_score(self, domain):
         """
-        Without using an external API, fetch the homepage of the given domain,
-        then calculate SEO scores based on the word count and link count.
-        
-        Additionally, add the estimated external link count (from search) to the calculation.
+        Without using an external API, fetch the homepage of the given domain and calculate
+        SEO scores based on word count and link count. Also, add the estimated external link count.
         
         Calculation:
           - Effective Word Count = word_count + (external_count * 10)
@@ -234,8 +223,8 @@ class BacklinkAutomation:
 
     def generate_backlink_content(self, keyword=None):
         """
-        Generate detailed, informative backlink content using the Llama model.
-        Append the backlink URL to the generated content.
+        Generate detailed, informative backlink content using the Llama model,
+        and append the backlink URL.
         """
         if not keyword:
             keyword = random.choice(self.keywords)
@@ -258,7 +247,7 @@ class BacklinkAutomation:
     def create_account_and_login(self, site_url):
         """
         Use Selenium to create an account and log in on the target site.
-        Fills out form fields, solves CAPTCHA, and logs in.
+        Uses robust element detection for form fields.
         """
         try:
             self.driver.get(site_url)
@@ -268,28 +257,116 @@ class BacklinkAutomation:
             username = f"user{random.randint(1000, 9999)}"
             password = self.generate_random_password()
             
-            # Example form fields: "email", "username", "password", "password_confirm"
-            self.driver.find_element(By.NAME, "email").send_keys(email)
-            self.driver.find_element(By.NAME, "username").send_keys(username)
-            self.driver.find_element(By.NAME, "password").send_keys(password)
-            self.driver.find_element(By.NAME, "password_confirm").send_keys(password)
+            # Robust detection for registration fields:
+            email_field = self.find_element_robust([
+                (By.NAME, "email"),
+                (By.ID, "email"),
+                (By.CSS_SELECTOR, "input[type='email']")
+            ])
+            if not email_field:
+                self.log_error(f"{site_url}: Email field not found.")
+                return False
+            email_field.clear()
+            email_field.send_keys(email)
             
-            # Solve CAPTCHA (XPath may need to be adjusted)
-            captcha_img = self.driver.find_element(By.XPATH, "//img[contains(@class, 'captcha')]")
-            captcha_img.screenshot("captcha.png")
-            captcha_text = self.solve_captcha("captcha.png")
-            self.driver.find_element(By.NAME, "captcha").send_keys(captcha_text)
+            username_field = self.find_element_robust([
+                (By.NAME, "username"),
+                (By.ID, "username"),
+                (By.CSS_SELECTOR, "input[name*='user']")
+            ])
+            if not username_field:
+                self.log_error(f"{site_url}: Username field not found.")
+                return False
+            username_field.clear()
+            username_field.send_keys(username)
             
-            self.driver.find_element(By.NAME, "submit").click()
+            password_field = self.find_element_robust([
+                (By.NAME, "password"),
+                (By.ID, "password"),
+                (By.CSS_SELECTOR, "input[type='password']")
+            ])
+            if not password_field:
+                self.log_error(f"{site_url}: Password field not found.")
+                return False
+            password_field.clear()
+            password_field.send_keys(password)
+            
+            password_confirm_field = self.find_element_robust([
+                (By.NAME, "password_confirm"),
+                (By.ID, "password_confirm"),
+                (By.CSS_SELECTOR, "input[name*='confirm']")
+            ])
+            if not password_confirm_field:
+                self.log_error(f"{site_url}: Password confirmation field not found.")
+                return False
+            password_confirm_field.clear()
+            password_confirm_field.send_keys(password)
+            
+            # Solve CAPTCHA (robust approach using XPath; may need adjustment per site)
+            captcha_img = self.find_element_robust([
+                (By.XPATH, "//img[contains(@class, 'captcha')]"),
+                (By.CSS_SELECTOR, "img[src*='captcha']")
+            ])
+            if captcha_img:
+                captcha_img.screenshot("captcha.png")
+                captcha_text = self.solve_captcha("captcha.png")
+                captcha_field = self.find_element_robust([
+                    (By.NAME, "captcha"),
+                    (By.ID, "captcha")
+                ])
+                if captcha_field:
+                    captcha_field.clear()
+                    captcha_field.send_keys(captcha_text)
+                else:
+                    self.log_error(f"{site_url}: CAPTCHA input field not found.")
+            else:
+                self.log_error(f"{site_url}: CAPTCHA image not found.")
+            
+            # Click the submit button (for registration)
+            submit_button = self.find_element_robust([
+                (By.NAME, "submit"),
+                (By.CSS_SELECTOR, "button[type='submit']"),
+                (By.XPATH, "//input[@type='submit']")
+            ])
+            if not submit_button:
+                self.log_error(f"{site_url}: Registration submit button not found.")
+                return False
+            submit_button.click()
             time.sleep(3)
             print(f"{site_url}: Registration successful, logging in...")
             
-            # Log in using the created credentials
-            self.driver.find_element(By.NAME, "username").clear()
-            self.driver.find_element(By.NAME, "username").send_keys(username)
-            self.driver.find_element(By.NAME, "password").clear()
-            self.driver.find_element(By.NAME, "password").send_keys(password)
-            self.driver.find_element(By.NAME, "login").click()
+            # Login steps: robust detection for login fields
+            username_login = self.find_element_robust([
+                (By.NAME, "username"),
+                (By.ID, "username"),
+                (By.CSS_SELECTOR, "input[name*='user']")
+            ])
+            if not username_login:
+                self.log_error(f"{site_url}: Login username field not found.")
+                return False
+            username_login.clear()
+            username_login.send_keys(username)
+            
+            password_login = self.find_element_robust([
+                (By.NAME, "password"),
+                (By.ID, "password"),
+                (By.CSS_SELECTOR, "input[type='password']")
+            ])
+            if not password_login:
+                self.log_error(f"{site_url}: Login password field not found.")
+                return False
+            password_login.clear()
+            password_login.send_keys(password)
+            
+            login_button = self.find_element_robust([
+                (By.NAME, "login"),
+                (By.CSS_SELECTOR, "button[type='submit']"),
+                (By.XPATH, "//input[@type='submit']")
+            ])
+            if not login_button:
+                self.log_error(f"{site_url}: Login button not found.")
+                return False
+            login_button.click()
             time.sleep(3)
             return True
         except Exception as e:
@@ -298,9 +375,8 @@ class BacklinkAutomation:
 
     def find_comment_field(self):
         """
-        Automatically locate the comment input field on the page.
-        First, try to find an element with name="comment".
-        If not found, scan through all textareas and input elements for attributes containing "comment".
+        Automatically locate the comment field.
+        First, try element with name="comment". If not found, scan textareas and inputs.
         """
         try:
             return self.driver.find_element(By.NAME, "comment")
@@ -331,8 +407,7 @@ class BacklinkAutomation:
     def find_submit_comment_button(self):
         """
         Automatically locate the comment submission button.
-        First, try to find an element with name="submit_comment".
-        If not found, search for a button with text containing "submit" or an input with type="submit".
+        First, try element with name="submit_comment"; then check buttons and input[type='submit'].
         """
         try:
             return self.driver.find_element(By.NAME, "submit_comment")
@@ -352,7 +427,7 @@ class BacklinkAutomation:
 
     def post_comment(self, site_url):
         """
-        After account creation and login, use AI to generate a title and comment content,
+        After account creation and login, generate a title and comment using AI,
         then automatically locate the comment field and submit the comment.
         """
         try:
@@ -386,10 +461,10 @@ class BacklinkAutomation:
     def run(self):
         """
         Periodically:
-         - Find only blog and forum sites via googlesearch.
+         - Search for blog and forum sites using googlesearch.
          - For valid sites (based on SEO score), create an account, log in, and post a comment.
          - Record the posting timestamp in a JSON file to avoid reposting within 3 days.
-         - All operations include network delays and are executed in parallel.
+         - Execute operations in parallel with delays and robust error handling.
         """
         while True:
             print("Searching for blog and forum sites...")
@@ -420,10 +495,10 @@ class BacklinkAutomation:
 if __name__ == "__main__":
     # Example usage:
     # site_url: Target domain or reference URL (e.g., "https://example.com")
-    # safetensor_model_path: Full path to your model file (e.g., "D:/Otomation/bckoto/Llama-3.2-1B/model.safetensors")
+    # safetensor_model_path: Full path to your model file (e.g., "Llama-3.2-1B/model.safetensors")
     backlink_bot = BacklinkAutomation(
         "https://example.com",
-        "Llama-3.2-1B/model.safetensors",  # Use a valid local path without a leading slash if relative
+        "Llama-3.2-1B/model.safetensors",  # Ensure this path is valid
         interval=86400,         # Run every 24 hours
         max_backlinks=100,
         min_pa=50,
